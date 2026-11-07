@@ -25,14 +25,18 @@ static const IsaSite sites[] = {
 #include "gr_isa_sites.inc"
 };
 enum { SITE_COUNT = sizeof(sites) / sizeof(sites[0]) };
+#ifdef _WIN32
 static uint8_t original_bytes[SITE_COUNT][16];
 static uint8_t site_patched[SITE_COUNT];
 static unsigned char *isa_image;
+#endif
 static volatile long emulated_count;
+#ifdef _WIN32
 /* GOW3_NEW_ISA_STATS=1: emulations per site, to find the hot ones (a trap costs microseconds). */
 static int count_sites;
 static volatile long site_hits[SITE_COUNT];
 static uint8_t site_trap[SITE_COUNT];
+#endif
 
 /* A decoded instruction of the kinds above. */
 typedef struct {
