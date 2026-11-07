@@ -16,7 +16,7 @@ provides=('gravityrush-pc')
 conflicts=('gravityrush-pc')
 options=('!strip' '!debug')
 source=("https://github.com/abdullaho21/gravityrush_pc/releases/download/v${pkgver}-linux.${pkgrel}/gravityrush-pc-${pkgver}-${pkgrel}-x86_64.tar.gz")
-sha256sums=('28e3317f49b33cbe89e465591d0417f7d003721f81a2cd40f2da27999843795e')
+sha256sums=('f0849ab634696f5f1bc8694250b285d851f66b9cc034d14cd62cb2d1f6916365')
 
 package() {
     cd "gravityrush-pc-${pkgver}-${pkgrel}-x86_64"

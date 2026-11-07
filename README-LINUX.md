@@ -25,6 +25,11 @@ The game folder is remembered, so later just run `gravityrush-pc` (or use the me
 package installs). Settings, saves and logs are in `~/.local/share/gravityrush-pc`. In game,
 Insert (or R3+L2) opens the port's menu.
 
+FSR 4.1.1 needs files made from AMD's own upscaler DLL, so they are not included (Luca's port does not
+ship them either). If a game you own comes with AMD's FSR 4.1.x DLLs, build them with
+`tools/fsr4cap/build_assets.sh` from the source tree, put the `fsr4_411` folder in
+`~/.local/share/gravityrush-pc/` and set `upscaler=fsr411` in `gravityrush.ini` there.
+
 ## Changes from Luca's version
 
 - Fibers (`libSceFiber`) on `ucontext`, plus small Linux build fixes.
