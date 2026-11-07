@@ -25,7 +25,7 @@ objcopy --strip-debug out/gpu/libgow3gpu.so "$stage/out/gpu/libgow3gpu.so"
 cp -r scripts patches "$stage/"
 # No package unpacker in releases (as in the Windows package): players prepare the game folder.
 rm -f "$stage/scripts/pkg_extract.py" "$stage/scripts/pkg_keys.py"
-cp run.py LICENSE README.md README-LINUX.md linux/gravityrush-pc linux/gravityrush-pc.desktop "$stage/"
+cp run.py LICENSE README.md README-LUCA.md linux/gravityrush-pc linux/gravityrush-pc.desktop "$stage/"
 cp launcher/gravityrush.png launcher/gravityrush.bmp "$stage/launcher/"
 
 # Licenses of the code compiled into the two binaries.
