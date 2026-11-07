@@ -9,7 +9,7 @@
 
 /* Decoded INSERTQ/EXTRQ at `at`: 0 when not one. */
 typedef struct { int insert, reg_form, dst, src, len, idx, size; } Sse4a;
-static int decode(const unsigned char *at, Sse4a *out) {
+static __attribute__((unused)) int decode(const unsigned char *at, Sse4a *out) {  /* used by the Windows emulator only */
     int p = 0, rex = 0;
     if (at[p] != 0x66 && at[p] != 0xf2) return 0;
     out->insert = at[p++] == 0xf2;

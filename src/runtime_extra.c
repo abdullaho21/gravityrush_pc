@@ -196,7 +196,12 @@ static ABI int32_t prt_aperture(int index, void **address, uint64_t *size) {
 }
 static ABI int32_t kernel_nanosleep(const struct timespec *request, struct timespec *remain) {
     if (!request) return ERR(E_INVAL);
+#ifdef _WIN32
     compat_sleep_ns((uint64_t)request->tv_sec*1000000000u+(uint64_t)request->tv_nsec);
+#else
+    struct timespec t=*request;
+    while (nanosleep(&t,&t) && errno==EINTR) {}
+#endif
     if (remain) remain->tv_sec=remain->tv_nsec=0;
     return 0;
 }
