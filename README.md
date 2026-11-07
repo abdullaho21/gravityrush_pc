@@ -1,3 +1,6 @@
+> **Unofficial Linux fork.** This branch adds a native Linux build of Luca Pazienza's port: see
+> [README-LINUX.md](README-LINUX.md). Everything below is Luca's original README.
+
 # Gravity Rush Remastered — Native PC Port
 
 <p align="center">

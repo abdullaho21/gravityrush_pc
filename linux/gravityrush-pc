@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Starts Gravity Rush Remastered with the native Linux build of this port.
+#
+#   gravityrush-pc [GAME_FOLDER] [runtime arguments...]
+#
+# GAME_FOLDER is your own unpacked game: the folder with eboot.bin, sce_module and sce_sys. It is
+# remembered, so later starts need no argument. Settings, saves, shader cache and logs are kept in
+# ${XDG_DATA_HOME:-~/.local/share}/gravityrush-pc. In game, Insert (or R3+L2) opens the port's menu.
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+port="$here"                                            # packaged: run.py sits next to this script
+[[ -f "$port/run.py" ]] || port="$(cd "$here/.." && pwd)"  # source tree: linux/gravityrush-pc
+data="${GRAVITYRUSH_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/gravityrush-pc}"
+saved="$data/game-folder"
+
+fail() {
+    echo "gravityrush-pc: $*" >&2
+    if [[ ! -t 2 ]] && command -v notify-send >/dev/null 2>&1; then notify-send "Gravity Rush" "$*"; fi
+    exit 1
+}
+
+case "${1:-}" in
+    -h|--help) sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+game=""
+if [[ $# -gt 0 && $1 != -* ]]; then game=$1; shift; fi
+if [[ -z $game && -f $saved ]]; then game=$(<"$saved"); fi
+# Started from the application menu without a saved folder: ask for it.
+if [[ -z $game && ! -t 0 ]] && command -v zenity >/dev/null 2>&1; then
+    game=$(zenity --file-selection --directory \
+        --title="Choose your Gravity Rush game folder (the one with eboot.bin)") || exit 0
+fi
+[[ -n $game ]] || fail "start it once with your game folder: gravityrush-pc /path/to/CUSA01113"
+game=$(readlink -f "$game")
+[[ -f $game/eboot.bin ]] || fail "no eboot.bin in $game (choose the folder with eboot.bin, sce_module and sce_sys)"
+[[ -x $port/out/gravityrush-runtime ]] || fail "$port/out/gravityrush-runtime is missing"
+command -v python3 >/dev/null 2>&1 || fail "python3 is not installed"
+mkdir -p "$data/user/logs"
+printf '%s\n' "$game" > "$saved"
+
+export GOW3_GAME_DIR="$game" GOW3_DATA_DIR="$data" GOW3_PROBE="$port/out/gravityrush-runtime"
+# The defaults the Windows launcher passes; any of them can be set before starting instead.
+export GOW3_LANGUAGE="${GOW3_LANGUAGE:-1}" GOW3_MENU_CONFIRM="${GOW3_MENU_CONFIRM:-cross}"
+export GOW3_SAVE_BACKUP="${GOW3_SAVE_BACKUP:-1}" GOW3_SAVE_BACKUP_KEEP="${GOW3_SAVE_BACKUP_KEEP:-10}"
+export GOW3_BACKGROUND_WARMUP="${GOW3_BACKGROUND_WARMUP:-1}" GOW3_PARALLEL_WARMUP="${GOW3_PARALLEL_WARMUP:-1}"
+export GOW3_PIPELINE_BINARIES="${GOW3_PIPELINE_BINARIES:-1}"
+export GOW3_MOUSE_LOOK="${GOW3_MOUSE_LOOK:-1}" GOW3_HOST_MOTION="${GOW3_HOST_MOTION:-1}"
+export GOW3_MODS_DIR="${GOW3_MODS_DIR:-$data/mods}" GOW3_PATCHES_DIR="${GOW3_PATCHES_DIR:-$data/patches}"
+export GOW3_FPS_LOG="${GOW3_FPS_LOG:-1}" GOW3_FRAME_STATS="${GOW3_FRAME_STATS:-1}"
+
+# The game's output goes to the terminal and to last_run.log; the last ten runs stay in user/logs.
+log="$data/user/last_run.log"
+if [[ -s $log ]]; then mv "$log" "$data/user/logs/run-$(date -r "$log" +%Y%m%d-%H%M%S).log"; fi
+find "$data/user/logs" -name 'run-*.log' -printf '%T@ %p\n' | sort -rn | tail -n +11 | cut -d' ' -f2- |
+    while IFS= read -r old; do rm -f -- "$old"; done
+python3 "$port/run.py" "$@" 2>&1 | tee "$log"
+exit "${PIPESTATUS[0]}"

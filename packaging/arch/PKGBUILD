@@ -1,0 +1,30 @@
+# Maintainer: abdullaho21 <193410144+abdullaho21@users.noreply.github.com>
+# Packages the release tarball built by packaging/linux/package.sh (no compiling here).
+pkgname=gravityrush-pc-bin
+pkgver=0.1.15
+pkgrel=1
+pkgdesc="Native Linux build of Luca Pazienza's Gravity Rush Remastered PC port (needs your own game files)"
+arch=('x86_64')
+url="https://github.com/abdullaho21/gravityrush_pc"
+license=('GPL-2.0-or-later')
+depends=('glibc' 'libgcc' 'libstdc++' 'python' 'sdl3' 'ffmpeg' 'vulkan-icd-loader' 'freetype2' 'fmt'
+         'zydis' 'zycore-c' 'xxhash' 'libx11')
+optdepends=('vulkan-driver: a Vulkan 1.3 driver for your graphics card'
+            'python-pillow: window icon'
+            'zenity: choose the game folder when started from the application menu')
+provides=('gravityrush-pc')
+conflicts=('gravityrush-pc')
+options=('!strip' '!debug')
+source=("https://github.com/abdullaho21/gravityrush_pc/releases/download/v${pkgver}-linux.${pkgrel}/gravityrush-pc-${pkgver}-${pkgrel}-x86_64.tar.gz")
+sha256sums=('28e3317f49b33cbe89e465591d0417f7d003721f81a2cd40f2da27999843795e')
+
+package() {
+    cd "gravityrush-pc-${pkgver}-${pkgrel}-x86_64"
+    install -d "$pkgdir/opt/gravityrush-pc" "$pkgdir/usr/bin"
+    cp -r --no-preserve=ownership . "$pkgdir/opt/gravityrush-pc/"
+    ln -s /opt/gravityrush-pc/gravityrush-pc "$pkgdir/usr/bin/gravityrush-pc"
+    install -Dm644 gravityrush-pc.desktop "$pkgdir/usr/share/applications/gravityrush-pc.desktop"
+    install -Dm644 launcher/gravityrush.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/gravityrush-pc.png"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    cp -r THIRD-PARTY-LICENSES "$pkgdir/usr/share/licenses/$pkgname/"
+}

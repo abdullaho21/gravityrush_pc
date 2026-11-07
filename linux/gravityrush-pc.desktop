@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Gravity Rush Remastered (Linux port)
+Comment=Native Linux build of Luca Pazienza's Gravity Rush PC port; needs your own game files
+Exec=gravityrush-pc
+Icon=gravityrush-pc
+Terminal=false
+Categories=Game;
