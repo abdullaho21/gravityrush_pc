@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Windows counterpart of run.sh: prepares the game image and starts gravityrush-runtime.exe.
+"""Prepares the game image and starts gravityrush-runtime (.exe on Windows; also used on Linux).
 
 Same environment variables as run.sh (GOW3_GAME_DIR, GOW3_DATA_DIR, GOW3_PATCHES, GOW3_MODS_*,
 GOW3_USER_DIR, ...). Extra arguments go to gravityrush-runtime.
@@ -10,11 +10,15 @@ The in-game "Apply and restart" runs this script again through GOW3_RESTART_COMM
 import ctypes
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
+import time
 
 PORT = Path(__file__).resolve().parent
+WINDOWS = os.name == 'nt'
+RUNTIME = 'gravityrush-runtime.exe' if WINDOWS else 'gravityrush-runtime'
 
 
 def fail(message):
@@ -23,6 +27,17 @@ def fail(message):
 
 
 def wait_for(pid):
+    if not WINDOWS:
+        # The Linux runtime restarts by exec, in the same process: there is nothing to wait for then.
+        for _ in range(300):
+            if pid == os.getpid():
+                return
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return
+            time.sleep(0.1)
+        return
     kernel32 = ctypes.windll.kernel32
     SYNCHRONIZE = 0x00100000
     handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
@@ -33,6 +48,8 @@ def wait_for(pid):
 
 def no_console():
     """Started without a console (the launcher): console programs must not open their own."""
+    if not WINDOWS:
+        return 0
     return 0 if ctypes.windll.kernel32.GetConsoleWindow() else subprocess.CREATE_NO_WINDOW
 
 
@@ -90,9 +107,9 @@ def main():
     if not env.get('GOW3_FSR411_DIR') and not (PORT / 'fsr4_411').is_dir() and (data / 'fsr4_411').is_dir():
         env['GOW3_FSR411_DIR'] = str(data / 'fsr4_411')
 
-    probe = Path(env['GOW3_PROBE']) if env.get('GOW3_PROBE') else find_executable('gravityrush-runtime.exe')
+    probe = Path(env['GOW3_PROBE']) if env.get('GOW3_PROBE') else find_executable(RUNTIME)
     if not probe or not probe.is_file():
-        fail('gravityrush-runtime.exe not found: build it with build.sh (MSYS2 CLANG64) or use a packaged build.')
+        fail(f'{RUNTIME} not found: build it with build.sh or use a packaged build.')
     # Development builds run from the MSYS2 tree: its CLANG64 DLLs (SDL3, FFmpeg, ...).
     if not (probe.parent / 'SDL3.dll').is_file():
         clang64 = Path(env.get('MSYS2_ROOT', r'C:\msys64')) / 'clang64' / 'bin'
@@ -206,7 +223,7 @@ def main():
             print(f'Save backup failed, starting anyway: {error}', flush=True)
         this = ['--run'] if getattr(sys, 'frozen', False) else [str(Path(__file__).resolve())]
         restart = [sys.executable, *this, '--after', str(os.getpid()), *args]
-        env['GOW3_RESTART_COMMAND'] = subprocess.list2cmdline(restart)
+        env['GOW3_RESTART_COMMAND'] = subprocess.list2cmdline(restart) if WINDOWS else shlex.join(restart)
         command = [str(probe), str(out / 'boot-linked.bin'), '--content-profile', str(out / 'content.bin'),
                    '--patches', str(out / 'patches.bin'), '--app0', str(game),
                    '--user', str(user_dir),

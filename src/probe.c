@@ -531,6 +531,19 @@ void runtime_restart(void) {
     /* The new launch waits for this process's GPU device to go away (run.py --after). */
     TerminateProcess(GetCurrentProcess(),0);
 #else
+    /* run.py sets GOW3_RESTART_COMMAND (POSIX shell quoting here): the same launch again, run in
+     * this process so the launcher keeps its child and its output; exec releases the GPU device. */
+    const char *command=getenv("GOW3_RESTART_COMMAND");
+    if (command && *command) {
+        puts("Runtime: restarting through run.py");
+        sigset_t none;
+        sigemptyset(&none);
+        sigprocmask(SIG_SETMASK, &none, NULL);
+        syscall(SYS_close_range, 3u, ~0u, 0u);
+        execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+        perror("runtime_restart: exec");
+        _exit(1);
+    }
     puts("Runtime: restarting through run.sh");
     syscall(SYS_close_range, 3u, ~0u, 0u);
     execlp("bash", "bash", "run.sh", (char *)NULL);
