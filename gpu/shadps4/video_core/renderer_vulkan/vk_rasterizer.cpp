@@ -335,9 +335,26 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     }
 }
 
+template <typename FetchShader>
+static std::pair<u32, u32> DrawOffsetsOf(const AmdGpu::Regs& regs, const Shader::Info& info,
+                                         const FetchShader& fetch_shader);
+
+// Takes the pipeline's own optional<const FetchShaderData>: v0.1.9 took optional<FetchShaderData>,
+// which copied the attribute vector into a temporary at every call (LucaPazienza/gravityrush_pc#14).
 static std::pair<u32, u32> GetDrawOffsets(
     const AmdGpu::Regs& regs, const Shader::Info& info,
-    const std::optional<Shader::Gcn::FetchShaderData>& fetch_shader) {
+    const std::optional<const Shader::Gcn::FetchShaderData>& fetch_shader) {
+    if (Gow3Toggle::Disabled(Gow3Toggle::FetchShaderNoCopy)) [[unlikely]] {
+        const std::optional<Shader::Gcn::FetchShaderData> copy = fetch_shader;  // the old temporary
+        asm volatile("" : : "r"(&copy) : "memory");
+        return DrawOffsetsOf(regs, info, copy);
+    }
+    return DrawOffsetsOf(regs, info, fetch_shader);
+}
+
+template <typename FetchShader>
+static std::pair<u32, u32> DrawOffsetsOf(const AmdGpu::Regs& regs, const Shader::Info& info,
+                                         const FetchShader& fetch_shader) {
     u32 vertex_offset = regs.index_offset;
     u32 instance_offset = 0;
     if (fetch_shader) {

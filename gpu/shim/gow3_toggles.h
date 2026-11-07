@@ -72,6 +72,8 @@ enum : std::uint64_t {
     ReadbackSpan = 1ull << 58, ///< ResolveReadbacks skips ranges outside the pending copies' pages
     SubmissionReuse = 1ull << 59, ///< draw preparation reuses finished submissions' arrays
     StreamReadTracking = 1ull << 60, ///< no barrier tracking for read-only stream buffer copies
+    // Linux fork: bit set = the v0.1.9 converting copy in GetDrawOffsets, for A/B.
+    FetchShaderNoCopy = 1ull << 61,
     // Bits 20-29 are used as raw debug toggles by the camera/object motion and the upscaler.
 };
 inline bool Disabled(std::uint64_t bit) {
