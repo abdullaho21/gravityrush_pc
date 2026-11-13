@@ -7,8 +7,8 @@ pkgdesc="Native Linux build of Luca Pazienza's Gravity Rush Remastered PC port (
 arch=('x86_64')
 url="https://github.com/abdullaho21/gravityrush_pc"
 license=('GPL-2.0-or-later')
-depends=('glibc' 'libgcc' 'libstdc++' 'python' 'sdl3' 'ffmpeg' 'vulkan-icd-loader' 'freetype2' 'fmt'
-         'zydis' 'zycore-c' 'xxhash' 'libx11')
+# SDL3, FFmpeg, fmt, Zydis and xxHash are inside the tarball (packaging/linux/portable.py).
+depends=('glibc' 'python' 'vulkan-icd-loader' 'freetype2' 'libx11' 'zlib')
 optdepends=('vulkan-driver: a Vulkan 1.3 driver for your graphics card'
             'python-pillow: window icon'
             'zenity: choose the game folder when started from the application menu')

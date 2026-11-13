@@ -14,8 +14,9 @@ Linux is not supported upstream, so please report Linux problems
 
 **[Download the latest release](https://github.com/abdullaho21/gravityrush_pc/releases/latest)**
 
-- Made for **Arch Linux**. I play it on CachyOS with an AMD graphics card, and it is playable on my
-  end. Other distributions, the Steam Deck and the Steam Machine are not tested.
+- For 64-bit Linux with glibc 2.39 or newer: Ubuntu 24.04, Debian 13, Fedora 40, SteamOS 3.7, Arch
+  and later ones. I play it on CachyOS with an AMD graphics card, and it is playable on my end.
+  Other distributions, the Steam Deck and the Steam Machine are not tested by me.
 - You need your own copy of the game, unpacked (the folder with `eboot.bin`, `sce_module` and
   `sce_sys`). No game files are included. Tested with the EU release CUSA01113, version 01.00.
 - I plan to follow Luca's releases about once a week, sometimes sooner.
@@ -27,7 +28,8 @@ From the [Releases](https://github.com/abdullaho21/gravityrush_pc/releases) page
 - the Arch package: `sudo pacman -U gravityrush-pc-bin-<version>-x86_64.pkg.tar.zst`, then run
   `gravityrush-pc /path/to/your/game`; or
 - the tarball: extract it anywhere, then run `./gravityrush-pc /path/to/your/game` inside it
-  (the libraries come from your system: `sudo pacman -S --needed python sdl3 ffmpeg vulkan-icd-loader freetype2 fmt zydis xxhash libx11`).
+  (SDL3, FFmpeg and the other libraries it needs are inside; from your system it uses Python 3, a
+  Vulkan 1.3 driver, libX11 and FreeType, which desktop systems have).
 
 The game folder is remembered, so later just run `gravityrush-pc` (or use the menu entry the
 package installs). Settings, saves and logs are in `~/.local/share/gravityrush-pc`. In game,
@@ -54,6 +56,10 @@ git clone --depth 1 -b v3.3.0 https://github.com/GPUOpen-LibrariesAndSDKs/Vulkan
 CMAKE_INCLUDE_PATH="$PWD/vma/include" CPLUS_INCLUDE_PATH="$PWD/gpu/third_party/xbyak" GOW3_RELEASE=1 bash build.sh
 linux/gravityrush-pc /path/to/your/game
 ```
+
+A build made this way uses your system's libraries and only runs on a system like yours. The
+release packages are built in a container instead, so they also start on older systems:
+`packaging/linux/build-release.sh <version>` (needs podman or docker).
 
 ## Credits and license
 

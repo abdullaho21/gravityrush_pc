@@ -18,6 +18,9 @@ add_compile_options(-fno-omit-frame-pointer)
 option(GOW3_LTO "Link-time optimization of gow3gpu" ON)
 set(GOW3_PGO "off" CACHE STRING "Profile-guided optimization: off, generate, use")
 set(GOW3_PGO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../pgo" CACHE PATH "Profile directory")
+# gow3 (Linux release): libstdc++ and libgcc inside libgow3gpu.so, so the release does not need
+# the libstdc++ of the GCC it was built with on the player's system (issue #1).
+option(GOW3_STATIC_CXX "Link libstdc++ and libgcc statically into gow3gpu" OFF)
 if (GOW3_LTO)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT gow3_ipo_ok OUTPUT gow3_ipo_error)
@@ -175,6 +178,12 @@ target_compile_options(gow3gpu PRIVATE -Wno-deprecated-declarations -Wno-missing
 # Runtime symbols (runtime_memory_*, runtime_process_*) resolve against gravityrush-runtime.
 if (NOT WIN32)
     target_link_options(gow3gpu PRIVATE -Wl,--allow-shlib-undefined)
+endif()
+if (GOW3_STATIC_CXX AND NOT WIN32)
+    # --exclude-libs: the copy stays private to this library; the graphics driver loaded into the
+    # same process keeps using the system's libstdc++.
+    target_link_options(gow3gpu PRIVATE -static-libstdc++ -static-libgcc
+        -Wl,--exclude-libs,libstdc++.a:libgcc.a:libgcc_eh.a)
 endif()
 target_link_libraries(gow3gpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan)
 target_link_libraries(gow3gpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
