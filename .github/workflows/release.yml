@@ -5,7 +5,9 @@ name: Build and release (Windows)
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    # Not the Linux build's tags (v0.1.15-linux.2): its release is made by hand from
+    # packaging/linux/build-release.sh and must not get a Windows package or these notes.
+    tags: ['v*', '!v*-linux.*']
   pull_request:
   workflow_dispatch:
 
