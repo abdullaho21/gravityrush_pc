@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Builds dist/gravityrush-pc-<version>-x86_64.tar.gz (and its .sha256) from a finished release
-# build:  GOW3_RELEASE=1 bash build.sh  then  packaging/linux/package.sh <version>
-# The libraries the build links against (SDL3, FFmpeg, Vulkan loader, ...) are not bundled: the
-# package is meant for an up-to-date Arch Linux, where they come from the distribution
-# (packaging/arch/PKGBUILD lists them).
+# build. packaging/linux/build-release.sh <version> does both steps in the build container; that
+# is how releases are made.
+# The package has to start on systems other than the build machine (issue #1): the libraries the
+# build links against are copied into it, except glibc and the few every system has (Vulkan
+# loader, libX11, FreeType, zlib), and packaging/linux/portable.py refuses a build that needs a
+# newer glibc than the supported one.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 version=${1:?usage: packaging/linux/package.sh VERSION}
@@ -16,12 +18,16 @@ stage="dist/$name"
 if readelf -d out/gravityrush-runtime | grep -q "RUNPATH.*$PWD"; then
     echo 'out/gravityrush-runtime names the build folder: rebuild with GOW3_RELEASE=1' >&2; exit 1
 fi
+command -v patchelf >/dev/null || {
+    echo 'Need patchelf (the build container has it: packaging/linux/build-release.sh).' >&2; exit 1; }
 
 rm -rf "$stage"
 mkdir -p "$stage/out/gpu" "$stage/launcher"
 # Debug information is left out (it is most of the size); symbols stay for crash reports.
 objcopy --strip-debug out/gravityrush-runtime "$stage/out/gravityrush-runtime"
 objcopy --strip-debug out/gpu/libgow3gpu.so "$stage/out/gpu/libgow3gpu.so"
+# The shared libraries the two binaries need go next to libgow3gpu.so (SDL3, FFmpeg, xxHash).
+python3 packaging/linux/portable.py bundle "$stage"
 cp -r scripts patches "$stage/"
 # No package unpacker in releases (as in the Windows package): players prepare the game folder.
 rm -f "$stage/scripts/pkg_extract.py" "$stage/scripts/pkg_keys.py"
@@ -37,13 +43,28 @@ for dir in gpu/third_party/* third_party/*; do
         [[ -f $file ]] && cp "$file" "$licenses/$(basename "$dir")-$(basename "$file")"
     done
 done
+# The libraries built in the container (packaging/linux/Containerfile): licenses and exact versions.
+bundled=${GOW3_BUNDLED_LICENSES:-}
+[[ -n $bundled && -f $bundled/VERSIONS ]] || {
+    echo 'GOW3_BUNDLED_LICENSES is not set: build with packaging/linux/build-release.sh' >&2; exit 1; }
+cp "$bundled"/* "$licenses/"
 {
-    echo "Third-party code compiled into out/gravityrush-runtime and out/gpu/libgow3gpu.so:"
-    echo "the shadPS4 video core (GPL-2.0-or-later) and the libraries in gpu/third_party and"
-    echo "third_party of the source tree (one license file each here). Vulkan Memory Allocator"
-    echo "(MIT) is header-only; its license is at the top of vk_mem_alloc.h."
-    echo "SDL3, FFmpeg, FreeType, fmt, Zydis, xxHash and the Vulkan loader are not included: they are"
-    echo "the system's own libraries."
+    echo "Third-party code in this package."
+    echo
+    echo "Compiled into out/gravityrush-runtime and out/gpu/libgow3gpu.so: the shadPS4 video core"
+    echo "(GPL-2.0-or-later), the libraries in gpu/third_party and third_party of the source tree,"
+    echo "fmt, Zydis, Zycore, robin-map, Boost and Vulkan headers, and GCC's libstdc++ (GPL-3.0-or-later"
+    echo "with the GCC Runtime Library Exception). Vulkan Memory Allocator (MIT) is header-only; its"
+    echo "license is at the top of vk_mem_alloc.h."
+    echo
+    echo "Shared libraries in out/gpu, built unmodified from their sources: SDL3 (zlib license),"
+    echo "FFmpeg (LGPL-2.1-or-later: built without its GPL and nonfree parts) and xxHash (BSD-2-Clause)."
+    echo "You may replace them with your own builds of the same versions."
+    echo
+    echo "VERSIONS lists the exact sources and FFmpeg's configuration; packaging/linux/Containerfile in"
+    echo "the source tree (https://github.com/abdullaho21/gravityrush_pc) builds all of them."
+    echo
+    echo "Not included, taken from your system: glibc, the Vulkan loader, libX11, FreeType and zlib."
 } > "$licenses/README.txt"
 
 find "$stage" -name __pycache__ -prune -exec rm -r {} +
@@ -62,6 +83,9 @@ if grep -rlI --null "$HOME" "$stage" >/dev/null 2>&1 || grep -qa "$HOME" "$stage
     echo "Package contains $HOME (build paths): rebuild with -ffile-prefix-map" >&2
     exit 1
 fi
+
+# Would it start on another system? (bundled libraries found, glibc old enough)
+python3 packaging/linux/portable.py check "$stage"
 
 tar -C dist --owner=0 --group=0 --sort=name -czf "dist/$name.tar.gz" "$name"
 (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")

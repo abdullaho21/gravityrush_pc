@@ -70,7 +70,7 @@ for patch in gpu/patches/fsr-vulkan/*.patch; do
     fi
 done
 cmake -S gpu -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGOW3_PGO="$pgo" \
-    -DGOW3_LTO="${GOW3_LTO:-ON}" -DGOW3_PGO_DIR="$PWD/pgo" >/dev/null
+    -DGOW3_LTO="${GOW3_LTO:-ON}" -DGOW3_PGO_DIR="$PWD/pgo" -DGOW3_STATIC_CXX="${GOW3_STATIC_CXX:-OFF}" >/dev/null
 echo "GPU library: PGO $pgo, LTO ${GOW3_LTO:-ON}"
 # A failed GPU build must stop here: an older libgow3gpu.so would otherwise be used silently.
 if ! ninja -C out/gpu gow3gpu > out/gpu-build.log 2>&1; then
@@ -79,6 +79,7 @@ if ! ninja -C out/gpu gow3gpu > out/gpu-build.log 2>&1; then
 fi
 # $ORIGIN/gpu: packaged copies keep the library next to the binary without patching it.
 # GOW3_RELEASE=1 leaves out the build folder's absolute path (Linux release packages).
+# GOW3_STATIC_CXX=ON links libstdc++ into the GPU library (packaging/linux/build-release.sh).
 gpu=(-Lout/gpu -lgow3gpu -Wl,-rpath,'$ORIGIN/gpu' -rdynamic)
 [[ -n ${GOW3_RELEASE:-} ]] || gpu+=(-Wl,-rpath,"$PWD/out/gpu")
 runtime=(src/runtime*.c)

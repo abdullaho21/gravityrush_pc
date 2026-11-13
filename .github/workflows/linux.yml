@@ -1,0 +1,37 @@
+name: Linux release build
+
+# The Linux release has to start on systems other than the one that built it (issue #1: the
+# 0.1.15-1 tarball needed the build machine's FFmpeg, fmt, glibc and libstdc++). Every push and
+# pull request builds it exactly as releases are built, packaging/linux/build-release.sh: in the
+# Ubuntu 24.04 container, with the library check of packaging/linux/portable.py and the start
+# test on clean Ubuntu 24.04 and Debian 13 (packaging/linux/smoke-test.sh). The tarball is kept
+# as an artifact; releases are still published by hand.
+on:
+  push:
+    branches: [linux]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Python tests
+        run: python3 -m unittest discover -s tests
+
+      - name: Build the release, check its libraries, start it on clean systems
+        run: packaging/linux/build-release.sh 0.0.0-ci
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gravityrush-pc-linux
+          path: dist/gravityrush-pc-*-x86_64.tar.gz*
+          if-no-files-found: error

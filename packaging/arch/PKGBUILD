@@ -2,13 +2,13 @@
 # Packages the release tarball built by packaging/linux/package.sh (no compiling here).
 pkgname=gravityrush-pc-bin
 pkgver=0.1.15
-pkgrel=1
+pkgrel=2
 pkgdesc="Native Linux build of Luca Pazienza's Gravity Rush Remastered PC port (needs your own game files)"
 arch=('x86_64')
 url="https://github.com/abdullaho21/gravityrush_pc"
 license=('GPL-2.0-or-later')
-depends=('glibc' 'libgcc' 'libstdc++' 'python' 'sdl3' 'ffmpeg' 'vulkan-icd-loader' 'freetype2' 'fmt'
-         'zydis' 'zycore-c' 'xxhash' 'libx11')
+# SDL3, FFmpeg, fmt, Zydis and xxHash are inside the tarball (packaging/linux/portable.py).
+depends=('glibc' 'python' 'vulkan-icd-loader' 'freetype2' 'libx11' 'zlib')
 optdepends=('vulkan-driver: a Vulkan 1.3 driver for your graphics card'
             'python-pillow: window icon'
             'zenity: choose the game folder when started from the application menu')
@@ -16,7 +16,7 @@ provides=('gravityrush-pc')
 conflicts=('gravityrush-pc')
 options=('!strip' '!debug')
 source=("https://github.com/abdullaho21/gravityrush_pc/releases/download/v${pkgver}-linux.${pkgrel}/gravityrush-pc-${pkgver}-${pkgrel}-x86_64.tar.gz")
-sha256sums=('f0849ab634696f5f1bc8694250b285d851f66b9cc034d14cd62cb2d1f6916365')
+sha256sums=('afd1dab96a26af079f1a1a2277e97381d1ded42845f44352d93ac57acdc87e30')
 
 package() {
     cd "gravityrush-pc-${pkgver}-${pkgrel}-x86_64"
