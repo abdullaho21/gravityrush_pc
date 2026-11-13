@@ -59,7 +59,8 @@ linux/gravityrush-pc /path/to/your/game
 
 A build made this way uses your system's libraries and only runs on a system like yours. The
 release packages are built in a container instead, so they also start on older systems:
-`packaging/linux/build-release.sh <version>` (needs podman or docker).
+`packaging/linux/build-release.sh <version>` (needs podman or docker). It keeps the tarball only
+if it starts in clean Ubuntu 24.04 and Debian 13 containers; a release is never built any other way.
 
 ## Credits and license
 

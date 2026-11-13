@@ -6,6 +6,7 @@
 # machine: a binary built here would need this machine's library versions and would not start
 # on an older system such as SteamOS (issue #1). The container's build folder is out/release,
 # so the source tree's own out/ (bash build.sh) is left alone.
+# The tarball is kept only if it then starts on clean systems (packaging/linux/smoke-test.sh).
 # GOW3_PGO=use builds with a profile in pgo/ (it must come from the container's GCC 14).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -28,3 +29,11 @@ user=()
     -e HOME=/home/build -e GOW3_PGO="${GOW3_PGO:-off}" -e GOW3_LTO="${GOW3_LTO:-ON}" \
     -e CPLUS_INCLUDE_PATH=/src/gpu/third_party/xbyak \
     "$image" bash -c 'bash build.sh && packaging/linux/package.sh "$1"' build-release "$version"
+
+tarball="dist/gravityrush-pc-$version-x86_64.tar.gz"
+if ! CONTAINER_ENGINE="$engine" packaging/linux/smoke-test.sh "$tarball"; then
+    # Not left in dist/ under a release name: it must not be uploaded.
+    mv "$tarball" "$tarball.failed" && rm -f "$tarball.sha256"
+    echo "Release not made: $tarball.failed does not start on a clean system." >&2
+    exit 1
+fi
