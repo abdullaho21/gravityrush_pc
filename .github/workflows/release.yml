@@ -67,7 +67,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: gravityrush-windows
-          path: dist/gravityrush-windows.zip
+          # The names packaging/windows/package.sh writes (the version is the launcher's VERSION).
+          path: dist/GravityRush-PC-*-Windows.zip*
           if-no-files-found: error
 
       - name: Release
