@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "gow3_time_trace.h"
 #include "common/assert.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
@@ -153,6 +154,7 @@ s32 PS4_SYSV_ABI sceVideoOutIsFlipPending(s32 handle) {
 }
 
 s32 PS4_SYSV_ABI sceVideoOutSubmitFlip(s32 handle, s32 bufferIndex, s32 flipMode, s64 flipArg) {
+    runtime_time_trace(Gow3TimeTrace::Flip);
     auto* port = driver->GetPort(handle);
     if (!port) {
         LOG_ERROR(Lib_VideoOut, "Invalid handle = {}", handle);
@@ -242,6 +244,7 @@ s32 PS4_SYSV_ABI sceVideoOutGetEventCount(const Kernel::OrbisKernelEvent* ev) {
 }
 
 s32 PS4_SYSV_ABI sceVideoOutGetFlipStatus(s32 handle, FlipStatus* status) {
+    runtime_time_trace(Gow3TimeTrace::FlipStatus);
     if (!status) {
         LOG_ERROR(Lib_VideoOut, "Flip status is null");
         return ORBIS_VIDEO_OUT_ERROR_INVALID_ADDRESS;
@@ -269,6 +272,7 @@ s32 PS4_SYSV_ABI sceVideoOutGetFlipStatus(s32 handle, FlipStatus* status) {
 }
 
 s32 PS4_SYSV_ABI sceVideoOutGetVblankStatus(int handle, SceVideoOutVblankStatus* status) {
+    runtime_time_trace(Gow3TimeTrace::VblankStatus);
     if (status == nullptr) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_ADDRESS;
     }

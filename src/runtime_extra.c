@@ -241,6 +241,7 @@ static ABI uint64_t available_flexible(uint64_t *out) {
     return 0;
 }
 static ABI int32_t random_number(void *buffer, uint64_t size) {
+    runtime_time_trace(TT_RANDOM);
     if (!buffer || size>64) return (int32_t)0x817C0016; /* SCE_RANDOM_ERROR_INVALID */
     unsigned char *p=buffer;
     for (uint64_t i=0;i<size;++i) {

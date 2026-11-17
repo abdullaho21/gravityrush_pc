@@ -23,6 +23,18 @@ void runtime_report(void);
 void runtime_finalize(void *dso);
 uintptr_t runtime_mutex_resolve(const char *name);
 void runtime_mutex_report(void);
+/* GOW3_TIME_TRACE=1 (runtime_kernel.c): counts the guest's clock, random, sleep, pad and flip calls
+ * per thread; runtime_time_trace_report() prints and resets them (with every Frame stats line). */
+enum { TT_TSC, TT_TSC_FREQ, TT_PROC_US, TT_PROC_NS, TT_CLOCK_RT, TT_CLOCK_MONO, TT_CLOCK_OTHER, TT_GTOD,
+       TT_TIME, TT_RTC, TT_RANDOM, TT_SLEEP, TT_FLIP_STATUS, TT_VBLANK_STATUS, TT_WAIT_EQUEUE, TT_PAD,
+       TT_FLIP, TT_GNM_FLIP, TT_COUNT };
+void runtime_time_trace(int which);
+/* runtime_pad.c, frame-exact record/replay: the game thread's sceKernelGetProcessTime readings pass
+ * through here (recorded, or replaced by the recorded ones); the frame index since the start (-1: off). */
+uint64_t runtime_frame_time(uint64_t value);
+uint64_t runtime_process_time_us(void); /* runtime_kernel.c: the guest process clock, untraced */
+long long runtime_pad_frame_index(void);
+void runtime_time_trace_report(void);
 uintptr_t runtime_memory_resolve(const char *name);
 void runtime_memory_report(void);
 int runtime_memory_is_mapped(uintptr_t address, uint64_t size);

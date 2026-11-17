@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+extern "C" long long runtime_pad_frame_index(void);
+#include "gow3_time_trace.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -507,7 +509,7 @@ void VideoOutDriver::Flip(const Request& req) {
                         "%.0f write faults/s, %lld hot pages; GPU thread %.2f us/draw, "
                         "%.0f draws/frame, idle %.1f%%; blocked: recorder %.1f%%, host copies "
                         "%.1f%% (%.0f/frame), copy threads %.1f%%, GPU ticks %.1f%%; "
-                        "reduced-size draws %.0f/frame of %.0f in the scene\n",
+                        "reduced-size draws %.0f/frame of %.0f in the scene; at %.2f ms, frame %lld\n",
                         frames / window, worst_ms, EmulatorSettings.GetVblankFrequency(), compiles,
                         compile_ns / 1e6, capture_ms, async_ms, wait_ms, snapshot_ms, guest_wait_ms,
                         pending_draws,
@@ -521,9 +523,16 @@ void VideoOutDriver::Flip(const Request& req) {
                         Gow3Stats::copy_threads_wait_ns.exchange(0) / (window * 1e7),
                         Gow3Stats::tick_wait_ns.exchange(0) / (window * 1e7),
                         frames ? double(Gow3Stats::reduced_draws.exchange(0)) / frames : 0.0,
-                        frames ? double(Gow3Stats::scene_draws.exchange(0)) / frames : 0.0);
+                        frames ? double(Gow3Stats::scene_draws.exchange(0)) / frames : 0.0,
+                        // Steady-clock time of the window's end (lines up with the pad recorder's and
+                        // the camera log's timestamps).
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count(),
+                        runtime_pad_frame_index());
             presenter->GetRasterizer().GetPipelineCache().ReportCompilerStats();
             Vulkan::WaitDiagnostics::Report();
+            runtime_time_trace_report();
             // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
             if (intervals.size() > 2) {
                 std::vector<double> sorted = intervals;

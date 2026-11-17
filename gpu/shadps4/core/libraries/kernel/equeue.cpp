@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "gow3_time_trace.h"
 #include <atomic>
 #include <thread>
 #include <magic_enum/magic_enum.hpp>
@@ -460,6 +461,7 @@ int PS4_SYSV_ABI sceKernelDeleteEqueue(OrbisKernelEqueue eq) {
 
 int PS4_SYSV_ABI sceKernelWaitEqueue(OrbisKernelEqueue eq, OrbisKernelEvent* ev, int num, int* out,
                                      OrbisKernelUseconds* timo) {
+    runtime_time_trace(Gow3TimeTrace::WaitEqueue);
     HLE_TRACE;
     if (!kqueues.contains(eq)) {
         return ORBIS_KERNEL_ERROR_EBADF;

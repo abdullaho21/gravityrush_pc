@@ -429,6 +429,10 @@ static void sample_host(PadData *d) {
  * the sticks. An empty file releases everything. */
 static struct { uint32_t buttons; int stick[4]; int touch_side; } injected={0,{-1,-1,-1,-1},-1};
 static int replay_armed;      /* 1 while a GOW3_PAD_REPLAY recording plays, 2 once it ended */
+static int record_request;    /* 1: the token "record" asks to start GOW3_PAD_RECORD, 2: done */
+static int record_ended;      /* a recording the token started has stopped: F9 does not restart it */
+static int frame_req_record, frame_req_replay; /* 1: token seen, start at the next pad read; 2: done */
+static void frame_record_stop(void);
 static uint64_t replay_start; /* 0: (re)start at the next sample */
 static void read_inject(void) {
     static const char *path; static int checked; static uint64_t last_check; static struct timespec mtime;
@@ -456,6 +460,9 @@ static void read_inject(void) {
     char token[64];
     while (fscanf(f,"%63s",token)==1) {
         if (!strcmp(token,"replay") && replay_armed!=1) { replay_armed=1; replay_start=0; } /* GOW3_PAD_REPLAY */
+        if (!strcmp(token,"record") && !record_request) record_request=1; /* GOW3_PAD_RECORD, once */
+        if (!strcmp(token,"record") && !frame_req_record) frame_req_record=1; /* GOW3_FRAME_RECORD */
+        if (!strcmp(token,"replay") && !frame_req_replay) frame_req_replay=1; /* GOW3_FRAME_REPLAY */
         if (!strcmp(token,"touchpad_left") || !strcmp(token,"touchpad_right")) {
             injected.buttons|=BTN_TOUCHPAD;
             injected.touch_side=!strcmp(token,"touchpad_right");
@@ -470,7 +477,9 @@ static void read_inject(void) {
 /* GOW3_PAD_RECORD=<file>: F9 starts and stops recording the pad state (gamepad or keyboard) with
  * the time since F9; GOW3_PAD_REPLAY=<file> plays such a recording back, started by the token
  * "replay" in GOW3_PAD_FILE (scripted tests repeat a route the player ran once). Lines: ms buttons
- * lx ly rx ry l2 r2, written when the state changes. */
+ * lx ly rx ry l2 r2, written when the state changes. The token "record" in GOW3_PAD_FILE starts the
+ * recording too (once), so a script starts recording and replay at the same point of the game.
+ * The overlay shows a red REC mark while recording. */
 typedef struct { uint32_t ms, buttons; uint8_t axes[4], l2, r2; } PadSample;
 static FILE *record_file;
 static uint64_t record_start;
@@ -481,14 +490,20 @@ static void record_sample(const PadData *d) {
     if (!path || !*path || !sdl_ready) return;
     const bool *k=SDL_GetKeyboardState(NULL);
     const int f9=k && k[SDL_SCANCODE_F9];
-    if (f9 && !f9_was_down) {
+    int toggle=f9 && !f9_was_down;
+    if (record_request==1) { record_request=2; if (!record_file) toggle=1; }
+    if (toggle) {
         if (record_file) {
             fclose(record_file); record_file=NULL;
+            record_ended=record_request==2;
+            frame_record_stop();
+            gow3gpu_overlay_set_recording(0);
             printf("Runtime: pad recording stopped (%s)\n",path);
-        } else if ((record_file=fopen(path,"w"))) {
+        } else if (!record_ended && (record_file=fopen(path,"w"))) {
             record_start=now_us();
             memset(&record_last,0xff,sizeof(record_last));
-            printf("Runtime: pad recording started (%s, F9 stops)\n",path);
+            gow3gpu_overlay_set_recording(1);
+            printf("Runtime: pad recording started at %.2f ms (%s, F9 stops)\n",record_start/1000.0,path);
         }
     }
     f9_was_down=f9;
@@ -525,6 +540,7 @@ static void replay_sample(PadData *d) {
         const char *skip=getenv("GOW3_PAD_REPLAY_SKIP_MS");
         replay_start=now_us()-(skip ? (uint64_t)strtoull(skip,NULL,10)*1000 : 0);
         replay_next=0;
+        printf("Runtime: pad replay started at %.2f ms\n",replay_start/1000.0);
     }
     const uint32_t ms=(uint32_t)((now_us()-replay_start)/1000);
     while (replay_next<replay_count && replay[replay_next].ms<=ms) ++replay_next;
@@ -537,6 +553,166 @@ static void replay_sample(PadData *d) {
     d->buttons=s->buttons;
     d->left_x=s->axes[0]; d->left_y=s->axes[1]; d->right_x=s->axes[2]; d->right_y=s->axes[3];
     d->l2=s->l2; d->r2=s->r2;
+}
+/* ---- frame-exact record and replay: GOW3_FRAME_RECORD=<file>, GOW3_FRAME_REPLAY=<file> ----
+ * A frame is one pad read of the game thread (it reads the pad once per frame). Recorded per frame:
+ * the pad state the game received and every sceKernelGetProcessTime value the game thread read until
+ * its next pad read, as offsets from the first frame. A replay hands the game the same pad state and
+ * the same clock readings frame by frame, however fast the frames render, so its simulation repeats
+ * (wall-clock replays drift within seconds: the game steps its physics by the measured frame time).
+ * Started by the tokens "record" / "replay" in GOW3_PAD_FILE; the first frame is the pad read after
+ * the token. Line per frame: buttons lx ly rx ry l2 r2 touches x0 y0 x1 y1 pad_time_offset_us n t1..tn. */
+typedef struct {
+    uint32_t buttons; uint8_t axes[4], l2, r2, touch_count; uint16_t touch[4];
+    int64_t pad_ts; uint32_t first, count;
+} FrameRec;
+static int frame_mode;                 /* 0 off, 2 recording, 3 replaying, 4 replay ended, 5 recording ended */
+static __thread int frame_thread;      /* 1 on the game thread that drives the frames */
+static long long frame_index=-1;
+static int64_t frame_base, frame_pad_base; /* process time (us) and pad timestamp of frame 0 */
+static FILE *frame_out;
+static FrameRec frame_open; static int64_t open_times[256]; static uint32_t open_count;
+static FrameRec *frames; static size_t frame_total;
+static int64_t *frame_times; static size_t frame_time_total;
+static uint32_t frame_used; static uint64_t frame_last; static int64_t frame_end_offset;
+static uint64_t frame_extra, frame_missing; static long long frame_first_mismatch=-1;
+long long runtime_pad_frame_index(void) {
+    const int m=__atomic_load_n(&frame_mode,__ATOMIC_RELAXED);
+    return m==2 || m==3 ? __atomic_load_n(&frame_index,__ATOMIC_RELAXED) : -1;
+}
+static void frame_write_open(void) {
+    if (!frame_out || frame_index<0) return;
+    const FrameRec *f=&frame_open;
+    fprintf(frame_out,"%u %u %u %u %u %u %u %u %u %u %u %u %lld %u",f->buttons,f->axes[0],f->axes[1],
+            f->axes[2],f->axes[3],f->l2,f->r2,f->touch_count,f->touch[0],f->touch[1],f->touch[2],f->touch[3],
+            (long long)f->pad_ts,open_count);
+    for (uint32_t i=0;i<open_count;++i) fprintf(frame_out," %lld",(long long)open_times[i]);
+    fputc('\n',frame_out);
+    fflush(frame_out);
+}
+static void frame_record_stop(void) {
+    if (frame_mode!=2) return;
+    frame_write_open();
+    fclose(frame_out); frame_out=NULL;
+    printf("Runtime: frame recording stopped after %lld frames\n",frame_index+1);
+    __atomic_store_n(&frame_mode,5,__ATOMIC_RELAXED);
+}
+static int frame_load(const char *path) {
+    FILE *f=fopen(path,"r");
+    if (!f) { printf("Runtime: frame replay: cannot open %s\n",path); return 0; }
+    size_t cap=0, tcap=0;
+    unsigned v[12]; long long ts; unsigned n;
+    while (fscanf(f,"%u %u %u %u %u %u %u %u %u %u %u %u %lld %u",&v[0],&v[1],&v[2],&v[3],&v[4],&v[5],&v[6],
+                  &v[7],&v[8],&v[9],&v[10],&v[11],&ts,&n)==14) {
+        if (frame_total==cap && !(frames=realloc(frames,(cap=cap ? cap*2 : 65536)*sizeof(*frames)))) break;
+        FrameRec *r=&frames[frame_total];
+        *r=(FrameRec){v[0],{(uint8_t)v[1],(uint8_t)v[2],(uint8_t)v[3],(uint8_t)v[4]},(uint8_t)v[5],(uint8_t)v[6],
+                      (uint8_t)v[7],{(uint16_t)v[8],(uint16_t)v[9],(uint16_t)v[10],(uint16_t)v[11]},ts,
+                      (uint32_t)frame_time_total,n};
+        for (unsigned i=0;i<n;++i) {
+            long long t;
+            if (fscanf(f,"%lld",&t)!=1) { n=i; break; }
+            if (frame_time_total==tcap && !(frame_times=realloc(frame_times,(tcap=tcap ? tcap*2 : 1<<20)*sizeof(*frame_times)))) break;
+            frame_times[frame_time_total++]=t;
+        }
+        r->count=(uint32_t)(frame_time_total-r->first);
+        ++frame_total;
+    }
+    fclose(f);
+    printf("Runtime: frame replay of %zu frames, %zu clock readings from %s\n",frame_total,frame_time_total,path);
+    return frame_total>0;
+}
+static void frame_mismatch(void) { if (frame_first_mismatch<0) frame_first_mismatch=frame_index; }
+/* At every pad read of the game thread, before sampling: close the previous frame, start a pending mode. */
+static void frame_before(void) {
+    if (frame_mode==2 || frame_mode==3) {
+        if (!frame_thread) return; /* another thread reading the pad does not make a frame */
+        if (frame_mode==2) frame_write_open();
+        else if (frame_index>=0 && frame_used<frames[frame_index].count) {
+            frame_missing+=frames[frame_index].count-frame_used; frame_mismatch();
+        }
+    } else if (frame_mode==0) {
+        static const char *rec, *rep; static int checked;
+        if (!checked) { rec=getenv("GOW3_FRAME_RECORD"); rep=getenv("GOW3_FRAME_REPLAY"); checked=1; }
+        if (frame_req_record==1 && rec && *rec) {
+            frame_req_record=2;
+            if ((frame_out=fopen(rec,"w"))) {
+                frame_thread=1; frame_index=-1; frame_base=(int64_t)runtime_process_time_us();
+                __atomic_store_n(&frame_mode,2,__ATOMIC_RELAXED);
+                printf("Runtime: frame recording started at %.2f ms (%s)\n",now_us()/1000.0,rec);
+            }
+        } else if (frame_req_replay==1 && rep && *rep) {
+            frame_req_replay=2;
+            if (frame_load(rep)) {
+                frame_thread=1; frame_index=-1; frame_base=(int64_t)runtime_process_time_us(); frame_last=0;
+                __atomic_store_n(&frame_mode,3,__ATOMIC_RELAXED);
+                printf("Runtime: frame replay started at %.2f ms\n",now_us()/1000.0);
+            }
+        }
+        if (frame_mode==0) return;
+    } else return;
+    __atomic_store_n(&frame_index,frame_index+1,__ATOMIC_RELAXED);
+    open_count=0; frame_used=0;
+    if (frame_mode==3 && (size_t)frame_index>=frame_total) {
+        frame_end_offset=(int64_t)frame_last-(int64_t)runtime_process_time_us();
+        printf("Runtime: frame replay finished: %zu frames; clock readings %llu more, %llu fewer than recorded"
+               " (first difference at frame %lld)\n",frame_total,(unsigned long long)frame_extra,
+               (unsigned long long)frame_missing,frame_first_mismatch);
+        __atomic_store_n(&frame_mode,4,__ATOMIC_RELAXED);
+    }
+}
+/* Replay: the recorded pad state replaces the sampled one (also while the overlay holds input). */
+static void frame_apply(PadData *d) {
+    if (frame_mode!=3 || !frame_thread || frame_index<0) return;
+    const FrameRec *f=&frames[frame_index];
+    if (frame_index==0) frame_pad_base=(int64_t)d->timestamp;
+    d->buttons=f->buttons;
+    d->left_x=f->axes[0]; d->left_y=f->axes[1]; d->right_x=f->axes[2]; d->right_y=f->axes[3];
+    d->l2=f->l2; d->r2=f->r2;
+    d->touch_count=f->touch_count>2 ? 2 : f->touch_count;
+    for (int i=0;i<2;++i) { d->touches[i].x=f->touch[2*i]; d->touches[i].y=f->touch[2*i+1]; }
+    d->timestamp=(uint64_t)(frame_pad_base+f->pad_ts);
+}
+/* Recording: the pad state the game receives this frame. */
+static void frame_after(const PadData *d) {
+    if (frame_mode!=2 || !frame_thread || frame_index<0) return;
+    if (frame_index==0) frame_pad_base=(int64_t)d->timestamp;
+    frame_open=(FrameRec){d->buttons,{d->left_x,d->left_y,d->right_x,d->right_y},d->l2,d->r2,d->touch_count,
+                          {d->touches[0].x,d->touches[0].y,d->touches[1].x,d->touches[1].y},
+                          (int64_t)d->timestamp-frame_pad_base,0,0};
+}
+uint64_t runtime_frame_time(uint64_t value) {
+    if (!frame_thread) return value;
+    if (frame_mode==2) {
+        if (frame_index>=0 && open_count<256) open_times[open_count++]=(int64_t)value-frame_base;
+        return value;
+    }
+    uint64_t r=value;
+    if (frame_mode==3 && frame_index>=0) {
+        const FrameRec *f=&frames[frame_index];
+        if (frame_used<f->count) r=(uint64_t)(frame_base+frame_times[f->first+frame_used]);
+        else { r=frame_last; ++frame_extra; frame_mismatch(); }
+        ++frame_used;
+    } else if (frame_mode==4) {
+        r=(uint64_t)((int64_t)value+frame_end_offset);
+    } else return value;
+    if (r<frame_last) r=frame_last;
+    frame_last=r;
+    return r;
+}
+/* While a recording is set up (GOW3_PAD_RECORD or GOW3_FRAME_RECORD) and has not started, the
+ * gamepad and keyboard are held neutral: the run must start from the same state as its replays
+ * (scripted input, the save-list taps, still works). */
+static int input_locked(void) {
+    static int armed=-1;
+    if (armed<0) {
+        const char *a=getenv("GOW3_PAD_RECORD"), *b=getenv("GOW3_FRAME_RECORD");
+        armed=(a && *a) || (b && *b);
+    }
+    return armed && !record_request && !frame_req_record;
+}
+static void neutral_host(PadData *d) {
+    d->buttons=0; d->left_x=d->left_y=d->right_x=d->right_y=128; d->l2=d->r2=0; d->touch_count=0;
 }
 /* After the menu or the text dialog closes, buttons still held (the Cross that accepted a
  * name) stay hidden until released: the game would take them as a new press. */
@@ -558,8 +734,9 @@ static uint32_t host_buttons(void) {
 static uint32_t list_buttons(void) {
     pthread_mutex_lock(&lock);
     read_inject();
-    uint32_t buttons=host_buttons()|injected.buttons;
-    SDL_Gamepad *g=current_gamepad();
+    const int locked=input_locked();
+    uint32_t buttons=(locked ? 0 : host_buttons())|injected.buttons;
+    SDL_Gamepad *g=locked ? NULL : current_gamepad();
     if (g) {
         const int y=SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFTY);
         if (y<-16000) buttons|=BTN_UP;
@@ -625,7 +802,8 @@ static void fake_motion(PadData *d) {
 static void sample(PadData *d) {
     sample_host(d);
     fake_motion(d);
-    if (gow3gpu_overlay_captures_input()) { hold_after_capture=1; return; }
+    if (input_locked()) neutral_host(d);
+    if (gow3gpu_overlay_captures_input()) { hold_after_capture=1; frame_apply(d); frame_after(d); return; }
     record_sample(d);
     read_inject();
     replay_sample(d);
@@ -640,7 +818,9 @@ static void sample(PadData *d) {
         if (d->buttons) d->buttons=0;
         else hold_after_capture=0;
     }
+    frame_apply(d);
     assign_touch_ids(d);
+    frame_after(d);
 }
 
 static ABI int32_t pad_init(void) {
@@ -668,7 +848,9 @@ static ABI int32_t pad_close(int32_t handle) {
 static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
     if (!data) return ERR_INVALID_ARG;
+    runtime_time_trace(TT_PAD);
     pthread_mutex_lock(&lock);
+    frame_before();
     sample(data); ++reads;
     pthread_mutex_unlock(&lock);
     return 0;
