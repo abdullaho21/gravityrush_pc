@@ -21,7 +21,9 @@ Layout (all ignored by git except the scripts):
   screenshot of the game window only), `PERF=1` (perf record), `TOGGLE_AB="w1 w2"` with `PHASE`/`INVERT`
   (switch optimizations off and on within one launch: `GOW3_TOGGLE_FILE`), `INI="key=value ..."`
   (settings for this run), `RECORD=`/`REPLAY=` (pad input by wall clock), `FRAME_RECORD=`/`FRAME_REPLAY=`
-  (pad input and the game's clock per frame).
+  (pad input and the game's clock per frame), `DRAWPIPE=default` (the draw pipe as a release starts; the
+  scripts otherwise turn it on), `CPUSET="4-7,12-15"` (the whole game on those CPUs, e.g. a Steam
+  Deck's 4 cores / 8 threads).
 - `toggle-summary.py results/window-<label>.txt`: FPS and texture-set counters by toggle state.
 - `with-qos.sh <command>`: holds a 20 µs `/dev/cpu_dma_latency` request while the command runs (deep CPU
   sleep blocked; needs write access to that device).
