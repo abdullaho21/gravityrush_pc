@@ -2,7 +2,7 @@
 # Packages the release tarball built by packaging/linux/package.sh (no compiling here).
 pkgname=gravityrush-pc-bin
 pkgver=0.1.15
-pkgrel=3
+pkgrel=4
 pkgdesc="Native Linux build of Luca Pazienza's Gravity Rush Remastered PC port (needs your own game files)"
 arch=('x86_64')
 url="https://github.com/abdullaho21/gravityrush_pc"
@@ -16,7 +16,7 @@ provides=('gravityrush-pc')
 conflicts=('gravityrush-pc')
 options=('!strip' '!debug')
 source=("https://github.com/abdullaho21/gravityrush_pc/releases/download/v${pkgver}-linux.${pkgrel}/gravityrush-pc-${pkgver}-${pkgrel}-x86_64.tar.gz")
-sha256sums=('c07bd592dd9ba591b5ebcf183d4802f2dc620c2e60eaa7b48da6ea284b3a45d8')
+sha256sums=('5443765d5fc7b20fe681c9fff0fae9d1f8c235c12828832a5572d6214ccaa22b')
 
 package() {
     cd "gravityrush-pc-${pkgver}-${pkgrel}-x86_64"

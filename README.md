@@ -67,6 +67,11 @@ generation on (60 or 90 shown). FSR 4 needs an RDNA 4 card; on the Deck the port
 - Fibers (`libSceFiber`) on `ucontext`, plus small Linux build fixes.
 - `run.py` starts the Linux runtime, and the in-game "Apply and restart" works.
 - One small speed fix: no copy of the fetch shader data on every draw (toggle bit 61 turns it off).
+- Steadier and faster frame rate: the port kept one heap for all threads but left glibc's trim
+  threshold at 128 KiB, so in most launches a large per-frame buffer was handed back to the kernel and
+  faulted in again every frame (~850 page faults, ~0.4 ms per frame on the game's DrawThread). The same
+  build ran at 261–299 FPS depending on the launch; with the fix 273–288, all in the fast mode (measured
+  in one test view on a 7800X3D; what is left follows other programs' CPU use).
 - Frame generation (above), ported from [SpartanPort](https://github.com/FelipePrado0/SpartanPort)
   (#1123) and adapted to Gravity Rush: its GPU thread runs a frame ahead of the flips, so each display
   buffer keeps its own captured frame, and frame generation also works without upscaling.
