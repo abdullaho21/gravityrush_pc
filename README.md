@@ -64,6 +64,49 @@ generation on (60 or 90 shown). FSR 4 needs an RDNA 4 card; on the Deck the port
 
 ## Changes from Luca's version
 
+### Start and now
+
+Build 2 (0.1.15-2, Luca's port with only the Linux changes) against build 4 (0.1.15-4). Measured on one PC
+(Ryzen 7 7800X3D, Radeon RX 9070 XT, Mesa 26.2), standing in the view of the first save, render
+resolution 1440p, FSR 4.1.1, VSync off, no frame limit, draw pipe on (`GOW3_DRAW_PIPE=1`; off by
+default). Each launch is the average of 60 seconds. The build 2 numbers come from its exact source built
+the same way; the page faults before the fix were counted in build 3, which has the same memory code.
+
+| | Build 2 (start) | Build 4 (now) |
+| --- | --- | --- |
+| FPS, deep CPU sleep blocked + busiest threads pinned (`tools/perf-lab/play-fast.sh`) | 256 (1 launch) | **273–289** (4 launches, average 283) |
+| FPS, plain start | 250–251 (2 launches) | not measured |
+| Spread between launches of one build | 261–306 (build 3, 7 launches) | 273–289 |
+| Page faults per frame on the game's draw thread | up to ~850 (build 3) | **0** |
+| Frame generation | – | **FSR 3.1 2x**: 60 → 120 FPS shown, even 8.3 ms frames |
+| Overlay | Luca's (FPS, frame time, GPU, CPU, memory) | + frame-time graph, frame generation status |
+| Draw recording | – | bulk descriptor writes, sampler memo, texture-set stamps (~1 % or less each) |
+| Release start check | Ubuntu 24.04, Debian 13 | + Arch Linux (the base of SteamOS) |
+| Measuring tools | – | `tools/perf-lab`: same-launch A/B switches, system monitor, recorded play |
+
+Faster on this PC, but not part of the release because they depend on the machine: a PGO build
+trained on my play, blocking deep CPU sleep (costs power, bad for a Steam Deck's battery) and pinning
+threads to cores (written for 8-core CPUs). Together they reached 303 FPS in one launch here
+(`tools/perf-lab`).
+
+### What carries over to other PCs
+
+- **Built for any 64-bit PC:** no CPU-specific instructions (`-march`), built against glibc 2.39 in a
+  container and started on clean Ubuntu 24.04, Debian 13 and Arch Linux before every release (that check
+  loads every library and runs a Vulkan test on a software driver; it does not play the game).
+- **Heap fix:** applies wherever glibc is the C library (every desktop Linux and SteamOS). The page faults
+  came from the port's own memory use, not from this PC, so other CPUs should lose the same frame time;
+  how much FPS that is depends on the frame rate. Measured only here, with the draw pipe on.
+- **Frame generation:** needs two common Vulkan features (storage images without a format, push
+  descriptors), which AMD's Mesa driver has on older chips too; checked when it starts, and it switches
+  itself off with a message where they are missing. Its cost on weaker graphics chips is not measured.
+  Off by default.
+- **Draw-recording changes:** plain CPU code, no hardware assumptions; each can be switched off live.
+- **Not tested on another PC, an NVIDIA or Intel graphics card, a Steam Deck or a Steam Machine.**
+  Reports are welcome.
+
+### All changes
+
 - Fibers (`libSceFiber`) on `ucontext`, plus small Linux build fixes.
 - `run.py` starts the Linux runtime, and the in-game "Apply and restart" works.
 - One small speed fix: no copy of the fetch shader data on every draw (toggle bit 61 turns it off).

@@ -19,7 +19,9 @@ done
 pad=$here/pad.txt; : > "$pad"
 log=$run/user/last_run.log
 mkdir -p "$here/results"
-export GRAVITYRUSH_DATA=$run GOW3_PAD_FILE=$pad GOW3_DRAW_PIPE=1
+export GRAVITYRUSH_DATA=$run GOW3_PAD_FILE=$pad
+# DRAWPIPE: GOW3_DRAW_PIPE for the run (default 1; "default" leaves it unset, as a release starts).
+if [[ ${DRAWPIPE:-1} == default ]]; then unset GOW3_DRAW_PIPE; else export GOW3_DRAW_PIPE=${DRAWPIPE:-1}; fi
 # RECORD=<file>: the player's own run. Same load and settle as every run, then the token "record" starts
 #   the pad recorder (red REC mark in the game); the run lasts until the player quits the game.
 #   TOGGLE_AB keeps alternating every PHASE seconds meanwhile.
@@ -50,7 +52,8 @@ fi
 toggles=$here/toggle.txt
 echo "0 0" > "$toggles.tmp" && mv -f "$toggles.tmp" "$toggles"
 export GOW3_TOGGLE_FILE=$toggles
-setsid "$app/gravityrush-pc" > "$here/results/console-$label.txt" 2>&1 < /dev/null &
+# CPUSET="4-7,12-15": the whole game on those CPUs only (e.g. a smaller CPU's core count).
+${CPUSET:+taskset -c "$CPUSET"} setsid "$app/gravityrush-pc" > "$here/results/console-$label.txt" 2>&1 < /dev/null &
 pgid=$!
 stop() { kill -TERM -- "-$pgid" 2>/dev/null || true; sleep 3; kill -KILL -- "-$pgid" 2>/dev/null || true; wait "$pgid" 2>/dev/null || true; }
 trap stop EXIT
