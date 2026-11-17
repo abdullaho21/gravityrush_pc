@@ -22,6 +22,7 @@
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/renderer_vulkan/vk_fsr4.h"
+#include "video_core/renderer_vulkan/vk_frame_generation.h"
 #include "video_core/texture_cache/image.h"
 
 struct FfxVkPortableUpscaleContext;
@@ -78,10 +79,18 @@ public:
     /// Gravity Rush upscaling: the tonemap draw's target (a display buffer), once OnSceneEnd
     /// chose to upscale this frame.
     void OnTonemapTarget(VideoCore::ImageId display);
-    /// The tonemap was recorded: the next draw or dispatch first upscales the frame.
+    /// The tonemap was recorded: the next draw or dispatch first upscales the frame (or, with
+    /// frame generation at the game's own size, captures it before the HUD).
     [[nodiscard]] bool UpscalePending() const noexcept {
-        return scaled_state == ScaledState::Recorded;
+        return scaled_state == ScaledState::Recorded || fg_native == FgNative::Recorded;
     }
+    /// gow3: AMD FSR 3.1 frame generation (gravityrush.ini frame_generation). It captures the
+    /// scene before the HUD: the upscaled frame (FinishUpscale) or, without upscaling, the
+    /// display buffer right after the tonemap; the presenter asks it for the in-between frame.
+    FrameGeneration& GetFrameGeneration() noexcept {
+        return frame_generation;
+    }
+
     void FinishUpscale();
 
     /// Start of a frame in the command stream (display pass).
@@ -243,6 +252,22 @@ private:
     UpscaledBuffer& BufferFor(VAddr address);
     bool ComposeUpscaled(UpscaledBuffer& buffer, Display& display);
     ScaledState scaled_state = ScaledState::Idle;
+    // Frame generation without upscaling (temporal AA at the game's size): after Run, the
+    // tonemap's display buffer is captured before the HUD by the next draw or dispatch.
+    enum class FgNative { Idle, WaitTonemap, Recorded };
+    FgNative fg_native = FgNative::Idle;
+    struct FgNativeFrame {
+        VideoCore::ImageId display{}, depth{};
+        u32 width = 0, height = 0;
+        std::array<float, 2> jitter{};
+        float near_plane = 0.1f, fov = 1.0f, frame_ms = 16.6f;
+        bool reset = false;
+    } fg_frame;
+    float run_frame_ms = 16.6f;
+    bool run_dispatched = false;
+    bool reported_fg_reduced = false;
+    void CaptureNative();
+    FrameGeneration frame_generation;
     struct UpscaleFrame {
         VideoCore::ImageId display{}, depth{};
         u32 width = 0, height = 0, out_width = 0, out_height = 0;

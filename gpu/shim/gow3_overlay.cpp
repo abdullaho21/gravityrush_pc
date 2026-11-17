@@ -63,6 +63,12 @@ namespace {
 std::mutex imgui_mutex; // the ImGui context: window thread (input) and present thread
 bool initialized = false;
 std::atomic<bool> menu_open{false};
+// Steady-clock nanoseconds when the pad recorder started; 0 while it is off.
+std::atomic<int64_t> recording_since{0};
+int64_t SteadyNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 bool r3_down = false, l2_down = false;
 std::atomic<bool> loading{false};
 std::atomic<u32> loading_done{0}, loading_total{0};
@@ -88,6 +94,10 @@ float base_scale = 1.0f;
 // Present rate for the FPS counter.
 std::chrono::steady_clock::time_point last_present{};
 float frame_ms_avg = 0.0f;
+// Frame-time graph (overlay item FrameGraph): the last present intervals, oldest first from frame_history_next.
+constexpr int FrameHistory = 240;
+float frame_history[FrameHistory] = {};
+int frame_history_next = 0;
 
 void SetOpen(bool value) {
     if (menu_open.exchange(value) == value) {
@@ -268,7 +278,15 @@ std::string OverlayText() {
     sample.fps = frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f;
     sample.frame_ms = frame_ms_avg;
     sample.upscaler = UpscalerLabel(s.upscaler);
-    return P::Format(sample, items, s.overlay_layout == 0);
+    std::string text = P::Format(sample, items, s.overlay_layout == 0);
+    // gow3: frame generation: the game's own rate next to the frames shown (the FPS above).
+    if (s.frame_generation.load(std::memory_order_relaxed)) {
+        if (const char* fg = s.fg_status.load(std::memory_order_relaxed)) {
+            text += text.empty() ? "" : "\n";
+            text += fg;
+        }
+    }
+    return text;
 }
 
 void ImageTab() {
@@ -344,7 +362,15 @@ void PerformanceTab() {
                   int(G::FramesQueued.size()), "More frames queued: steadier FPS, slower response to input.");
         CheckRow("Compile new shaders in the background", s.async_shaders,
                  "Fewer stutters in new areas; an object or effect may appear a moment later.");
+        CheckRow("Frame generation (AMD FSR 3.1, 2x)", s.frame_generation,
+                 "Shows a generated frame between two real ones: about twice the frames on screen, "
+                 "a little more input delay. The game itself runs as before. Needs FSR 3.1, FSR 4, "
+                 "DLSS or TAA (Image tab). Best with VSync off or a frame rate limit.");
         ImGui::EndTable();
+    }
+    if (s.frame_generation.load(std::memory_order_relaxed)) {
+        const char* fg = s.fg_status.load(std::memory_order_relaxed);
+        ImGui::TextDisabled("Frame generation: %s", fg ? fg : "waiting for the next frame");
     }
     ImGui::SeparatorText("Applied on restart");
     if (BeginRows("##restart")) {
@@ -374,8 +400,9 @@ void OverlayTab() {
     if (ImGui::BeginTable("##overlay_items", 2, ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableNextColumn();
         static const char* const names[] = {"FPS", "Frametime", "Upscaler", "GPU (name and use)", "CPU (game)",
-                                            "RAM (game / total)", "VRAM (used / available)"};
-        for (unsigned item = 0; item < 7; ++item) {
+                                            "RAM (game / total)", "VRAM (used / available)",
+                                            "Frametime graph"};
+        for (unsigned item = 0; item < 8; ++item) {
             const unsigned bit = 1u << item;
             bool on = (s.overlay_items & bit) != 0;
             if (ImGui::Checkbox(names[item], &on)) {
@@ -644,7 +671,9 @@ void FpsCounter() {
     if (const char* label = TestLabel()) {
         text = std::string(label) + (text.empty() ? "" : "\n") + text;
     }
-    if (text.empty()) {
+    const bool graph = s.show_fps && (s.overlay_items & Gow3PerfStats::FrameGraph) != 0;
+    const int64_t rec = recording_since.load(std::memory_order_relaxed);
+    if (text.empty() && !graph && !rec) {
         return;
     }
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -660,7 +689,28 @@ void FpsCounter() {
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
     ImGui::SetWindowFontScale((TestLabel() ? 250.0f : float(s.overlay_scale)) / 100.0f);
-    ImGui::TextUnformatted(text.c_str());
+    if (rec) {
+        const int64_t secs = std::max<int64_t>(0, (SteadyNs() - rec) / 1000000000);
+        ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "REC %d:%02d  (F9 stops)", int(secs / 60),
+                           int(secs % 60));
+    }
+    if (!text.empty()) {
+        ImGui::TextUnformatted(text.c_str());
+    }
+    if (graph) {
+        // Scale: at least twice the average, so a steady game draws a flat line in the lower half and
+        // hitches reach the top; the label gives the worst frame of the window.
+        float worst_ms = 0.0f;
+        for (const float v : frame_history) {
+            worst_ms = std::max(worst_ms, v);
+        }
+        const float top = std::max(frame_ms_avg * 2.0f, worst_ms);
+        char label[48];
+        std::snprintf(label, sizeof(label), "max %.1f ms", worst_ms);
+        const float scale = s.overlay_scale / 100.0f * base_scale;
+        ImGui::PlotLines("##frametime", frame_history, FrameHistory, frame_history_next, label, 0.0f, top,
+                         ImVec2(240.0f * scale, 56.0f * scale));
+    }
     ImGui::End();
 }
 
@@ -1054,11 +1104,15 @@ bool Visible() {
     const auto& s = Gow3Settings::Get();
     return initialized && (loading || background_total || menu_open || text_entry_active || choice_active ||
                            runtime_disabled_optimizations != 0 ||
-                           choice_retiring || s.show_fps);
+                           choice_retiring || s.show_fps || recording_since.load(std::memory_order_relaxed) != 0);
 }
 
 bool CapturesInput() {
     return menu_open || text_entry_active || choice_active;
+}
+
+void SetRecording(bool on) {
+    recording_since.store(on ? std::max<int64_t>(1, SteadyNs()) : 0, std::memory_order_relaxed);
 }
 
 void BeginChoice(const std::string& title, const std::vector<std::string>& items,
@@ -1125,6 +1179,8 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     last_present = now;
     if (ms > 0.0f && ms < 1000.0f) {
         frame_ms_avg = frame_ms_avg == 0.0f ? ms : frame_ms_avg * 0.95f + ms * 0.05f;
+        frame_history[frame_history_next] = ms;
+        frame_history_next = (frame_history_next + 1) % FrameHistory;
     }
     ConfirmRestart();
     PollChoiceInput();
@@ -1153,7 +1209,8 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (menu_open) {
         Menu();
     }
-    if ((Gow3Settings::Get().show_fps || TestLabel()) && !menu_open) {
+    if ((Gow3Settings::Get().show_fps || TestLabel() || recording_since.load(std::memory_order_relaxed)) &&
+        !menu_open) {
         FpsCounter();
     }
     if (background_total && !loading && !menu_open) {

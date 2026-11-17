@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "video_core/renderer_vulkan/frame_generation_policy.h"
 #include <deque>
 
 #include <condition_variable>
@@ -37,7 +38,10 @@ struct Frame {
     u64 ready_tick;
     bool is_hdr{false};
     u8 id{};
-
+    /// gow3: frame generation: the generated frame shown before this one (null: none), and
+    /// whether this frame is itself a generated one.
+    Frame* generated{nullptr};
+    bool is_generated{false};
 };
 
 enum SchedulerType {
@@ -124,6 +128,8 @@ private:
     AmdGpu::Liverpool* liverpool;
     Scheduler draw_scheduler;
     std::deque<u64> recent_frame_ticks; ///< gow3: GOW3_FRAMES_AHEAD bound (PrepareFrame)
+    /// gow3: frame generation: when the real frame follows its generated one (half an interval).
+    FrameGenerationPolicy::Pacing frame_pacing;
     Scheduler present_scheduler;
     Scheduler flip_scheduler;
     Swapchain swapchain;

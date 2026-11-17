@@ -31,8 +31,11 @@ if (GOW3_LTO)
     endif()
 endif()
 if (GOW3_PGO STREQUAL "generate")
-    # Atomic counters: the GPU, recording, preparation and copy threads run the same code.
-    add_compile_options(-fprofile-generate=${GOW3_PGO_DIR} -fprofile-update=atomic)
+    # Single (non-atomic) counters: atomic counters slowed the
+    # training run ~4x, so the preparation workers fell behind (22 % of draws prepared instead of
+    # ~66 %) and the profile described a different program. A few lost increments between threads
+    # are tolerated by -fprofile-correction in the use build.
+    add_compile_options(-fprofile-generate=${GOW3_PGO_DIR} -fprofile-update=single)
     add_link_options(-fprofile-generate=${GOW3_PGO_DIR})
     add_compile_definitions(GOW3_PGO_GENERATE)
 elseif (GOW3_PGO STREQUAL "use")
@@ -90,6 +93,15 @@ add_subdirectory(third_party/sirit EXCLUDE_FROM_ALL)
 set(FFX_VK_PORTABLE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(FFX_VK_PORTABLE_BUILD_PROBE OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/fsr-vulkan EXCLUDE_FROM_ALL)
+# gow3: the FSR 3.1.6 frame generation library carries the FFX SDK 2.3 core, whose private types share
+# names with the FFX 1.1.4 ones of the upscaler and FSR 4 v07: link-time optimisation would merge
+# them (-Wodr). Those objects are built without it.
+foreach(fg_target ffx_vulkan_fsr3_vk_framegeneration_3_1_6 ffx_vulkan_fsr3_framegen_3_1_6_scaffold
+        ffx_vulkan_fsr3_sdk_core_3_1_5_scaffold)
+    if (TARGET ${fg_target})
+        set_target_properties(${fg_target} PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
+    endif()
+endforeach()
 
 # Host shaders -> headers (same scheme as shadPS4's host_shaders/CMakeLists.txt).
 set(SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/host_shaders)
@@ -120,6 +132,8 @@ add_host_shader(camera_motion.comp camera_motion_comp)
 add_host_shader(upscale_merge.comp upscale_merge_comp)
 add_host_shader(upscale_sanitize.comp upscale_sanitize_comp)
 add_host_shader(upscale_reactive.comp upscale_reactive_comp)
+add_host_shader(fg_depth.comp fg_depth_comp)
+add_host_shader(fg_hud.comp fg_hud_comp)
 add_host_shader(taa.comp taa_comp)
 add_host_shader(gr_upscale_compose.comp gr_upscale_compose_comp)
 add_host_shader(taa_sharpen.comp taa_sharpen_comp)
@@ -185,7 +199,8 @@ if (GOW3_STATIC_CXX AND NOT WIN32)
     target_link_options(gow3gpu PRIVATE -static-libstdc++ -static-libgcc
         -Wl,--exclude-libs,libstdc++.a:libgcc.a:libgcc_eh.a)
 endif()
-target_link_libraries(gow3gpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan)
+target_link_libraries(gow3gpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan
+    ffx-vulkan::fsr3-vk-framegeneration-3.1.6)
 target_link_libraries(gow3gpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
     tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::FFMPEG PkgConfig::FREETYPE miniz::miniz Zydis::Zydis sirit)
 if (WIN32)
