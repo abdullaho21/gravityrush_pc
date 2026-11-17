@@ -4,7 +4,7 @@ name: Linux release build
 # 0.1.15-1 tarball needed the build machine's FFmpeg, fmt, glibc and libstdc++). Every push and
 # pull request builds it exactly as releases are built, packaging/linux/build-release.sh: in the
 # Ubuntu 24.04 container, with the library check of packaging/linux/portable.py and the start
-# test on clean Ubuntu 24.04 and Debian 13 (packaging/linux/smoke-test.sh). The tarball is kept
+# test on clean Ubuntu 24.04, Debian 13 and Arch Linux (packaging/linux/smoke-test.sh). The tarball is kept
 # as an artifact; releases are still published by hand.
 on:
   push:
