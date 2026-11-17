@@ -38,6 +38,8 @@ int gow3gpu_choice_poll(void);
 void gow3gpu_choice_set_input(uint32_t (*buttons)(void));
 /* 1 while the in-game settings menu is open: the game's pad input is held neutral. */
 int gow3gpu_overlay_captures_input(void);
+/* 1 while the pad recorder (GOW3_PAD_RECORD) writes: the overlay shows a red REC mark. */
+void gow3gpu_overlay_set_recording(int on);
 /* Number of symbols registered by the vendored libraries (diagnostics). */
 unsigned gow3gpu_symbol_count(void);
 #ifdef __cplusplus

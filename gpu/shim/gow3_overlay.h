@@ -44,6 +44,8 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent);
 
 /// The menu is open or a text entry is shown: the game's input is held neutral.
 bool CapturesInput();
+// The pad recorder runs (GOW3_PAD_RECORD): a red REC mark with the elapsed time.
+void SetRecording(bool on);
 
 /// The runtime's buttons (PS4 bits) that move and confirm the save list, polled every frame.
 void SetChoiceInput(uint32_t (*buttons)());

@@ -27,6 +27,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <thread>
 #include <csetjmp>
 #include <cstring>
 #include <ctime>
@@ -425,6 +426,8 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     }
 
     Frame* frame = GetRenderFrame();
+    frame->is_generated = false;
+    frame->generated = nullptr;
 
     const auto frame_subresources = vk::ImageSubresourceRange{
         .aspectMask = vk::ImageAspectFlagBits::eColor,
@@ -446,11 +449,31 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     };
 
     draw_scheduler.EndRendering();
-    const auto cmdbuf = draw_scheduler.CommandBuffer();
+    auto cmdbuf = draw_scheduler.CommandBuffer();
     cmdbuf.pipelineBarrier2(vk::DependencyInfo{
         .imageMemoryBarrierCount = 1,
         .pImageMemoryBarriers = &pre_barrier,
     });
+    // gow3: frame generation (AMD FSR 3.1, 2x): the frame between the previous one and this one,
+    // from the upscaled frame or, at the game's own size, from the display buffer with its HUD.
+    auto& upscaler = rasterizer->GetUpscaler();
+    auto& frame_generation = upscaler.GetFrameGeneration();
+    vk::Image generated_image{};
+    if (upscaled) {
+        generated_image =
+            frame_generation.Generate(cmdbuf, cpu_address, display.image, display.format);
+    } else if (image_id && frame_generation.HasCapture(cpu_address)) {
+        auto& image = texture_cache.GetImage(image_id);
+        runtime.Transit(&image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
+                        vk::AccessFlagBits2::eShaderRead);
+        runtime.FlushBarriers();
+        generated_image = frame_generation.Generate(cmdbuf, cpu_address, image.GetImage(),
+                                                    image.info.pixel_format);
+    } else {
+        frame_generation.Generate(cmdbuf, cpu_address, {}, vk::Format::eUndefined);
+    }
+    // Generate may have recorded into a newer command buffer (a context change waits for the GPU).
+    cmdbuf = draw_scheduler.CommandBuffer();
 
     VideoCore::ImageViewInfo view_info{};
     view_info.format = GetFrameViewFormat(attribute.attrib.pixel_format);
@@ -526,6 +549,29 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.srgb_input =
         attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::A2R10G10B10Srgb;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
+    if (generated_image) {
+        // The same passes over the generated frame, into a frame of its own.
+        Frame* generated = GetRenderFrame();
+        generated->generated = nullptr;
+        const auto generated_barrier = vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentRead,
+            .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .image = generated->image,
+            .subresourceRange{frame_subresources},
+        };
+        cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1,
+                                 .pImageMemoryBarriers = &generated_barrier});
+        const vk::ImageView generated_view = fsr_pass.Render(
+            cmdbuf, frame_generation.GeneratedView(view_info.format), image_size,
+            {generated->width, generated->height}, fsr_settings, generated->is_hdr);
+        pp_pass.Render(cmdbuf, generated_view, image_size, *generated, pp_settings);
+        generated->is_generated = true;
+        frame->generated = generated;
+    }
     if (frame_dump) {
         // The presented image as the swapchain blit reads it (General after the pass).
         const vk::MemoryBarrier2 done{.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
@@ -541,6 +587,10 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // Flush frame creation commands.
     frame->ready_semaphore = draw_scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = draw_scheduler.CurrentTick();
+    if (frame->generated) {
+        frame->generated->ready_semaphore = frame->ready_semaphore;
+        frame->generated->ready_tick = frame->ready_tick;
+    }
     SubmitInfo info{};
     draw_scheduler.Flush(info);
 
@@ -699,6 +749,15 @@ void Presenter::PresentLoadingFrame() {
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
+    // gow3: frame generation: the generated frame first, the real one halfway to the next.
+    using Clock = std::chrono::steady_clock;
+    const auto real_deadline = !is_reusing_frame && is_game_frame
+                                   ? frame_pacing.RealDeadline(Clock::now())
+                                   : Clock::time_point{};
+    if (Frame* generated = std::exchange(frame->generated, nullptr)) {
+        Present(generated, false, false);
+        std::this_thread::sleep_until(real_deadline);
+    }
     // Free the frame for reuse
     const auto free_frame = [&] {
         if (!is_reusing_frame) {
@@ -907,6 +966,8 @@ Frame* Presenter::GetRenderFrame() {
         frame->is_hdr != swapchain.GetHDR()) {
         RecreateFrame(frame, expected_frame_width, expected_frame_height);
     }
+    frame->generated = nullptr;
+    frame->is_generated = false;
 
     return frame;
 }

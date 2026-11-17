@@ -139,14 +139,14 @@ def windows_language():
 # launcher's own settings.json (passed to run.py as environment variables).
 
 INI_FLAGS = {'sharpen', 'object_motion', 'show_fps', 'vsync', 'async_shaders', 'deferred_readback',
-             'stale_readback', 'fsr1', 'rcas'}
+             'stale_readback', 'fsr1', 'rcas', 'frame_generation'}
 # The graphics keys are also in the in-game menu (Insert / R3+L2); run.py reads the startup ones.
 INI_DEFAULTS = {'upscaler': 'off', 'preset': '1', 'sharpen': '0', 'sharpness': '0.50',
                 'object_motion': '1', 'show_fps': '1', 'output_res': '1920x1080',
                 'live_resolution': 'auto', 'display_mode': 'borderless', 'vsync': '1', 'fps_limit': '0',
                 'async_shaders': '1', 'deferred_readback': '1', 'stale_readback': '0',
                 'render_resolution': 'native', 'engine_fps': '60', 'fsr1': '0', 'rcas': '1',
-                'rcas_strength': '75', 'frames_queued': '1',
+                'rcas_strength': '75', 'frames_queued': '1', 'frame_generation': '0',
                 # The Video page's other settings: only the keys listed here are written to the file.
                 'refresh_rate': '0', 'shadow_quality': 'standard', 'anisotropy': '16', 'fxaa': '1'}
 DISPLAY_MODES = [('windowed', ('Windowed',)), ('borderless', ('Borderless',)), ('fullscreen', ('Fullscreen',))]

@@ -42,6 +42,47 @@ int32_t runtime_guest_errno(int e) {
 static int32_t fail_posix(int e) { *runtime_errno()=runtime_guest_errno(e); return -1; }
 
 /* ---- clocks and sleeping ---- */
+/* GOW3_TIME_TRACE=1: which guest threads read which clocks, how often (groundwork for a frame-exact
+ * replay). One slot per thread, counters reset at every report. */
+typedef struct { int tid; uint64_t n[TT_COUNT]; } TimeTraceSlot;
+static TimeTraceSlot tt_slots[160];
+static int tt_used, tt_on=-1;
+static __thread int tt_slot=-1;
+void runtime_time_trace(int which) {
+    if (tt_on<0) { const char *e=getenv("GOW3_TIME_TRACE"); tt_on=e && *e && *e!='0'; }
+    if (!tt_on || which<0 || which>=TT_COUNT) return;
+    if (tt_slot<0) {
+        const int i=__atomic_fetch_add(&tt_used,1,__ATOMIC_RELAXED);
+        tt_slot=i<160 ? i : 159;
+#ifndef _WIN32
+        if (i<160) tt_slots[i].tid=(int)gettid();
+#endif
+    }
+    __atomic_fetch_add(&tt_slots[tt_slot].n[which],1,__ATOMIC_RELAXED);
+}
+void runtime_time_trace_report(void) {
+    if (tt_on<=0) return;
+    static const char *names[TT_COUNT]={"tsc","tsc_freq","proc_us","proc_ns","clock_rt","clock_mono",
+        "clock_other","gettimeofday","time","rtc","random","sleep","flip_status","vblank_status",
+        "wait_equeue","pad","flip","gnm_flip"};
+    const int used=__atomic_load_n(&tt_used,__ATOMIC_RELAXED);
+    for (int i=0;i<used && i<160;++i) {
+        char line[512]; int len=0, any=0;
+        for (int k=0;k<TT_COUNT;++k) {
+            const uint64_t v=__atomic_exchange_n(&tt_slots[i].n[k],0,__ATOMIC_RELAXED);
+            if (v) { any=1; len+=snprintf(line+len,sizeof(line)-(size_t)len," %s=%llu",names[k],(unsigned long long)v); }
+            if (len>=(int)sizeof(line)-40) break;
+        }
+        if (!any) continue;
+        char comm[32]="?";
+#ifndef _WIN32
+        char path[64]; snprintf(path,sizeof(path),"/proc/self/task/%d/comm",tt_slots[i].tid);
+        FILE *f=fopen(path,"r");
+        if (f) { if (fgets(comm,sizeof(comm),f)) comm[strcspn(comm,"\n")]=0; fclose(f); }
+#endif
+        printf("Time trace: %s (%d):%s\n",comm,tt_slots[i].tid,line);
+    }
+}
 static struct timespec process_start;
 __attribute__((constructor)) static void remember_start(void) { clock_gettime(CLOCK_MONOTONIC,&process_start); }
 static int host_clock(uint32_t id,clockid_t *out) {
@@ -57,6 +98,8 @@ static int host_clock(uint32_t id,clockid_t *out) {
 }
 static int clock_read(uint32_t id,GuestTimespec *ts) {
     clockid_t host;
+    runtime_time_trace(id==0 || id==9 || id==10 || id==13 ? TT_CLOCK_RT : id==4 || id==11 || id==12 || id==5 ||
+                       id==7 || id==8 ? TT_CLOCK_MONO : TT_CLOCK_OTHER);
     if (!ts || !host_clock(id,&host)) return EINVAL;
     struct timespec t;
     if (clock_gettime(host,&t)) return errno;
@@ -85,7 +128,10 @@ static ABI uint64_t process_time_counter(void) {
     return (uint64_t)(t.tv_sec-process_start.tv_sec)*1000000000+(uint64_t)(t.tv_nsec-process_start.tv_nsec);
 }
 static ABI uint64_t process_time_frequency(void) { return 1000000000; }
-static ABI uint64_t read_tsc(void) { return __rdtsc(); }
+static ABI uint64_t read_tsc(void) { runtime_time_trace(TT_TSC); return __rdtsc(); }
+/* The guest's entry points (the GPU library uses process_time directly, untraced). */
+static ABI uint64_t guest_process_time(void) { runtime_time_trace(TT_PROC_US); return runtime_frame_time(process_time()); }
+static ABI uint64_t guest_process_time_counter(void) { runtime_time_trace(TT_PROC_NS); return process_time_counter(); }
 static uint64_t tsc_hz;
 static ABI uint64_t tsc_frequency(void) {
     if (!tsc_hz) {
@@ -102,11 +148,13 @@ static ABI uint64_t tsc_frequency(void) {
     }
     return tsc_hz;
 }
+static ABI uint64_t guest_tsc_frequency(void) { runtime_time_trace(TT_TSC_FREQ); return tsc_frequency(); }
 /* Shared with the GPU library so flip/label timestamps use the guest's clock. */
 uint64_t runtime_process_time_us(void) { return process_time(); }
 uint64_t runtime_process_time_counter(void) { return process_time_counter(); }
 uint64_t runtime_tsc_frequency(void) { return tsc_frequency(); }
 static int sleep_ns(uint64_t ns) {
+    runtime_time_trace(TT_SLEEP);
 #ifdef _WIN32
     compat_sleep_ns(ns);
 #else
@@ -141,6 +189,7 @@ static ABI int32_t kernel_gettimezone(GuestTimezone *tz) {
 }
 static ABI int32_t posix_gettimeofday(GuestTimeval *tv,GuestTimezone *tz) {
     struct timeval t;
+    runtime_time_trace(TT_GTOD);
     gettimeofday(&t,NULL);
     if (tv) { tv->sec=t.tv_sec; tv->usec=t.tv_usec; }
     if (tz) kernel_gettimezone(tz);
@@ -150,7 +199,16 @@ static ABI int32_t kernel_gettimeofday(GuestTimeval *tv) {
     if (!tv) return ERR(22);
     return posix_gettimeofday(tv,NULL);
 }
-static ABI int64_t posix_time(int64_t *out) { int64_t t=(int64_t)time(NULL); if (out) *out=t; return t; }
+/* GOW3_FIXED_TIME=<seconds>: time() always returns that (frame-exact record and replay: the game calls
+ * it while booting and loading a save, likely to seed its random numbers). */
+static ABI int64_t posix_time(int64_t *out) {
+    runtime_time_trace(TT_TIME);
+    static int64_t fixed=-1;
+    if (fixed==-1) { const char *e=getenv("GOW3_FIXED_TIME"); fixed=e && *e ? (int64_t)strtoll(e,NULL,10) : -2; }
+    int64_t t=fixed>=0 ? fixed : (int64_t)time(NULL);
+    if (out) *out=t;
+    return t;
+}
 
 /* ---- process ---- */
 static ABI int32_t get_pagesize(void) { return PAGE; }
@@ -324,9 +382,9 @@ static ABI int32_t posix_key_set(uint32_t k,void *v) { int32_t r=key_set(k,v); r
 static const RuntimeExport exports[]={
     {"sceKernelClockGettime",kernel_clock_gettime}, {"clock_gettime",posix_clock_gettime},
     {"clock_getres",posix_clock_getres},
-    {"sceKernelGetProcessTime",process_time}, {"sceKernelGetProcessTimeCounter",process_time_counter},
+    {"sceKernelGetProcessTime",guest_process_time}, {"sceKernelGetProcessTimeCounter",guest_process_time_counter},
     {"sceKernelGetProcessTimeCounterFrequency",process_time_frequency},
-    {"sceKernelReadTsc",read_tsc}, {"sceKernelGetTscFrequency",tsc_frequency},
+    {"sceKernelReadTsc",read_tsc}, {"sceKernelGetTscFrequency",guest_tsc_frequency},
     {"sceKernelUsleep",kernel_usleep}, {"usleep",posix_usleep}, {"sleep",posix_sleep},
     {"nanosleep",posix_nanosleep}, {"sceKernelNanosleep",kernel_nanosleep},
     {"sceKernelGettimezone",kernel_gettimezone}, {"gettimeofday",posix_gettimeofday},

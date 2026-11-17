@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+extern "C" long long runtime_pad_frame_index(void);
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 
 #include <algorithm>
@@ -385,21 +386,28 @@ bool CameraMotion::OnGravityRushCamera(const float* source, float yscale, float 
         }
     }
     gow3_camera_seq = gow3_camera_seq + 1;
-    // GOW3_CAMERA_LOG=1: the camera of every frame (position, forward, up) for timing tests.
-    static const bool camera_log = [] {
+    // GOW3_CAMERA_LOG=1: the camera of every frame (position, forward, up) for timing tests;
+    // GOW3_CAMERA_LOG=<ms> above 1: at most one line per that many milliseconds (route traces of
+    // recorded and replayed play, where every frame would flood the log).
+    static const long camera_log = [] {
         const char* e = std::getenv("GOW3_CAMERA_LOG");
-        return e && *e && *e != '0';
+        return e && *e && *e != '0' ? std::max(1L, std::strtol(e, nullptr, 10)) : 0L;
     }();
-    if (camera_log) {
+    static double camera_log_last = -1.0e18;
+    const double camera_ms = camera_log ? std::chrono::duration<double, std::milli>(
+                                              std::chrono::steady_clock::now().time_since_epoch())
+                                              .count()
+                                        : 0.0;
+    if (camera_log && (camera_log == 1 || camera_ms - camera_log_last >= double(camera_log))) {
         static u64 camera_frame = 0;
-        const double ms = std::chrono::duration<double, std::milli>(
-                              std::chrono::steady_clock::now().time_since_epoch())
-                              .count();
-        std::printf("Camera log %llu %.2f pos %.4f %.4f %.4f fwd %.5f %.5f %.5f up %.5f %.5f %.5f\n",
+        camera_log_last = camera_ms;
+        const double ms = camera_ms;
+        // "frame": the game thread's frame since a frame-exact recording or replay started (-1: none).
+        std::printf("Camera log %llu %.2f pos %.4f %.4f %.4f fwd %.5f %.5f %.5f up %.5f %.5f %.5f frame %lld\n",
                     (unsigned long long)camera_frame++, ms, current.inv_view[3],
                     current.inv_view[7], current.inv_view[11], current.inv_view[2],
                     current.inv_view[6], current.inv_view[10], current.inv_view[1],
-                    current.inv_view[5], current.inv_view[9]);
+                    current.inv_view[5], current.inv_view[9], runtime_pad_frame_index());
     }
     static u32 log_counter = 0;
     if (log_counter++ % 1800 == 0) {

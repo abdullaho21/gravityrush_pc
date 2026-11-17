@@ -1911,6 +1911,10 @@ class LauncherWindow:
         self.row(body, 'Window mode', lambda c: Segments(self, c, WINDOW_MODES, self.ini.get('display_mode', 'borderless'),
                                                         lambda v: self.set_ini('display_mode', v)).widget.pack(side='right'))
         self.toggle_row(body, 'Vertical sync', self.ini.get('vsync', '1') == '1', lambda v: self.set_ini('vsync', '1' if v else '0'))
+        self.toggle_row(body, 'Frame generation (FSR 3.1, 2x)', self.ini.get('frame_generation', '0') == '1',
+                        lambda v: self.set_ini('frame_generation', '1' if v else '0'),
+                        'A generated frame between two real ones: about twice the frames on screen, a little more '
+                        'input delay. Needs FSR 3.1, FSR 4, DLSS or TAA. Also in the in-game menu (Performance).')
         self.row(body, 'FPS limit', lambda c: Segments(self, c, FPS_CHOICES, self.ini.get('fps_limit', '0'),
                                                       lambda v: self.set_ini('fps_limit', v)).widget.pack(side='right'),
                  'The game is made for 60 FPS; other values can change physics and animations.')

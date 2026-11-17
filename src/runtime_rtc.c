@@ -79,17 +79,19 @@ static int64_t local_offset(uint64_t utc) {
 }
 
 static ABI int32_t rtc_current_local(DateTime *t) {
+    runtime_time_trace(TT_RTC);
     if (!t) return ERR_INVALID_POINTER;
     uint64_t utc=now_utc();
     from_tick((uint64_t)((int64_t)utc+local_offset(utc)),t);
     return 0;
 }
 static ABI int32_t rtc_current_clock(DateTime *t, int32_t minutes) {
+    runtime_time_trace(TT_RTC);
     if (!t) return ERR_INVALID_POINTER;
     from_tick((uint64_t)((int64_t)now_utc()+(int64_t)minutes*60000000),t);
     return 0;
 }
-static ABI int32_t rtc_current_tick(uint64_t *tick) { if (!tick) return ERR_INVALID_POINTER; *tick=now_utc(); return 0; }
+static ABI int32_t rtc_current_tick(uint64_t *tick) { runtime_time_trace(TT_RTC); if (!tick) return ERR_INVALID_POINTER; *tick=now_utc(); return 0; }
 static ABI int32_t rtc_utc_to_local(const uint64_t *utc, uint64_t *local) {
     if (!utc || !local) return ERR_INVALID_POINTER;
     *local=(uint64_t)((int64_t)*utc+local_offset(*utc)); return 0;

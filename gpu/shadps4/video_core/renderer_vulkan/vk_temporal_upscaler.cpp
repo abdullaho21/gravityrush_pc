@@ -162,7 +162,8 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
                                    VideoCore::TextureCache& texture_cache_, Runtime& runtime_,
                                    CameraMotion& camera_motion_, SceneTargets& scene_targets_)
     : instance{instance_}, scheduler{scheduler_}, texture_cache{texture_cache_},
-      runtime{runtime_}, camera_motion{camera_motion_}, scene_targets{scene_targets_} {
+      runtime{runtime_}, camera_motion{camera_motion_}, scene_targets{scene_targets_},
+      frame_generation{instance_, scheduler_} {
     // Reject unsupported shaders before allocating resources or recording a frame.
     Gow3Settings::ConfigureUpscalerSupport(instance.IsFsr4Int8Supported(),
                                          instance.IsFsr411Supported());
@@ -406,7 +407,25 @@ void TemporalUpscaler::OnSceneEnd() {
     for (auto& slot : upscaled_buffers) {
         slot.valid = false;
     }
+    const bool fg_reset = reset;
+    run_dispatched = false;
     Run();
+    // gow3: frame generation at the game's own size: the scene after the tonemap, before the HUD.
+    if (run_dispatched && Gow3Settings::Get().frame_generation.load(std::memory_order_relaxed)) {
+        if (ReducedScene(color)) {
+            if (!reported_fg_reduced) {
+                reported_fg_reduced = true;
+                std::printf("FG: not with a reduced live-preset scene; frame generation needs the "
+                            "startup resolution patch or an upscaler\n");
+            }
+        } else {
+            fg_frame = {.depth = camera_motion.Depth(), .width = w, .height = h,
+                        .jitter = jitter, .near_plane = camera_motion.Near(),
+                        .fov = camera_motion.VerticalFov(), .frame_ms = run_frame_ms,
+                        .reset = fg_reset};
+            fg_native = FgNative::WaitTonemap;
+        }
+    }
 }
 
 bool TemporalUpscaler::UpscaleSize(u32 w, u32 h, u32& ow, u32& oh) const {
@@ -489,6 +508,10 @@ bool TemporalUpscaler::StartUpscale(u32 w, u32 h, u32 ow, u32 oh) {
 }
 
 void TemporalUpscaler::OnTonemapTarget(VideoCore::ImageId display) {
+    if (fg_native == FgNative::WaitTonemap) {
+        fg_frame.display = display;
+        fg_native = display ? FgNative::Recorded : FgNative::Idle;
+    }
     if (scaled_state != ScaledState::WaitTonemap) {
         return;
     }
@@ -511,7 +534,48 @@ TemporalUpscaler::UpscaledBuffer& TemporalUpscaler::BufferFor(VAddr address) {
     return *oldest;
 }
 
+void TemporalUpscaler::CaptureNative() {
+    fg_native = FgNative::Idle;
+    const auto& f = fg_frame;
+    auto& display = texture_cache.GetImage(f.display);
+    auto& depth = texture_cache.GetImage(f.depth);
+    const auto format = display.info.pixel_format;
+    if (display.info.size.width != f.width || display.info.size.height != f.height ||
+        depth.info.size.width != f.width || depth.info.size.height != f.height ||
+        (format != vk::Format::eR8G8B8A8Srgb && format != vk::Format::eR8G8B8A8Unorm)) {
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            std::printf("FG: display buffer %s %ux%u, depth %ux%u for a %ux%u scene: not captured\n",
+                        vk::to_string(format).c_str(), display.info.size.width,
+                        display.info.size.height, depth.info.size.width, depth.info.size.height,
+                        f.width, f.height);
+        }
+        return;
+    }
+    const auto depth_view = CachedView(depth, depth.info.pixel_format, vk::ImageAspectFlagBits::eDepth);
+    scheduler.EndRendering();
+    runtime.Transit(&display, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eTransfer,
+                    vk::AccessFlagBits2::eTransferRead);
+    runtime.Transit(&depth, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
+                    vk::AccessFlagBits2::eShaderRead);
+    runtime.FlushBarriers();
+    const float sign = Gow3Toggle::Disabled(1u << 26) ? -1.0f : 1.0f;
+    frame_generation.Capture(scheduler.CommandBuffer(),
+        {.scene = display.GetImage(), .scene_format = format,
+         .output_width = f.width, .output_height = f.height,
+         .depth = depth_view, .motion = vk::Image(motion_image), .motion_view = *motion_view,
+         .character_mask = {}, .object_motion = {}, .width = f.width, .height = f.height,
+         .jitter_x = sign * f.jitter[0], .jitter_y = sign * f.jitter[1], .frame_ms = f.frame_ms,
+         .near_plane = f.near_plane, .vertical_fov = f.fov, .projection_z = 1.0f,
+         .reset = f.reset},
+        display.info.guest_address);
+}
+
 void TemporalUpscaler::FinishUpscale() {
+    if (fg_native == FgNative::Recorded) {
+        CaptureNative();
+    }
     if (scaled_state != ScaledState::Recorded) {
         if (scaled_state == ScaledState::WaitTonemap) {
             scaled_state = ScaledState::Idle; // no tonemap draw followed: nothing to upscale
@@ -664,6 +728,19 @@ void TemporalUpscaler::FinishUpscale() {
             all, vk::AccessFlagBits2::eShaderRead);
     slot.display = f.display;
     slot.valid = true;
+    // gow3: frame generation: the upscaled scene before the HUD (composed when it is shown).
+    if (Gow3Settings::Get().frame_generation.load(std::memory_order_relaxed)) {
+        const float sign = Gow3Toggle::Disabled(1u << 26) ? -1.0f : 1.0f;
+        frame_generation.Capture(cmdbuf,
+            {.scene = vk::Image(slot.upscaled), .scene_format = unorm,
+             .output_width = f.out_width, .output_height = f.out_height,
+             .depth = depth_view, .motion = vk::Image(motion_image), .motion_view = *motion_view,
+             .character_mask = {}, .object_motion = {}, .width = f.width, .height = f.height,
+             .jitter_x = sign * f.jitter[0], .jitter_y = sign * f.jitter[1],
+             .frame_ms = f.frame_ms, .near_plane = f.near_plane, .vertical_fov = f.fov,
+             .projection_z = 1.0f, .reset = f.reset},
+            slot.address);
+    }
 }
 
 bool TemporalUpscaler::EnsureComposeResources(u32 w, u32 h, u32 ow, u32 oh, vk::Format format) {
@@ -1576,6 +1653,7 @@ void TemporalUpscaler::Run() {
         frame_ms = 16.6f;
     }
     last_frame = now;
+    run_frame_ms = frame_ms;
 
     bool dispatched = false;
     if (Gow3Settings::Get().upscaler == Gow3Settings::UpscalerTaa) {
@@ -1659,6 +1737,7 @@ void TemporalUpscaler::Run() {
             dispatched = true;
         }
     }
+    run_dispatched = dispatched;
     if (dispatched) {
         reset = false;
         dispatched_last_frame = true;

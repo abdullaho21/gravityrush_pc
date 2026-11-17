@@ -25,7 +25,8 @@ enum Item : unsigned {
     Cpu = 1u << 4,
     Ram = 1u << 5,
     Vram = 1u << 6,
-    AllItems = (1u << 7) - 1,
+    FrameGraph = 1u << 7, ///< frame-time graph under the text (drawn by the overlay, not by Format)
+    AllItems = (1u << 8) - 1,
 };
 inline constexpr unsigned DefaultItems = Fps | FrameTime | Upscaler;
 

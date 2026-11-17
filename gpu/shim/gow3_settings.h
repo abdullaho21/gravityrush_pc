@@ -65,6 +65,14 @@ struct Values {
     /// Set by the presenter: the game's image and the window it is shown in, in pixels.
     std::atomic<int> image_width{0}, image_height{0}, window_width{0}, window_height{0};
     std::atomic<int> frames_queued{1};
+    /// AMD FSR 3.1 frame generation, 2x (vk_frame_generation.cpp): one interpolated frame shown
+    /// before each real one. Live. Needs temporal AA or upscaling (FSR 3.1, FSR 4, DLSS or TAA).
+    std::atomic<bool> frame_generation{false};
+    /// Set by the renderer: why frame generation stopped (null: fine), its status line for the
+    /// menu and overlay (null: off), and the game's own frame rate while it runs (0: inactive).
+    std::atomic<const char*> fg_problem{nullptr};
+    std::atomic<const char*> fg_status{nullptr};
+    std::atomic<float> fg_game_fps{0.0f};
     // Startup: run.py turns them into patches and environment variables; "Apply and restart".
     std::atomic<int> render_resolution{0};
     std::atomic<int> engine_fps{60};

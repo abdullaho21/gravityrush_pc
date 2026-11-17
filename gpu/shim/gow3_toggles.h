@@ -15,6 +15,8 @@ extern "C" __attribute__((returns_twice)) int gow3_setjmp(sigjmp_buf buffer);
 #endif
 
 extern "C" std::uint64_t runtime_disabled_optimizations;
+/// The toggle file's optional second number (Gow3Toggle2).
+extern "C" std::uint64_t runtime_disabled_optimizations2;
 /// Recovery point for speculative guest memory reads on this thread (runtime_memory.c).
 extern "C" __thread sigjmp_buf* runtime_fault_recover;
 
@@ -80,6 +82,20 @@ inline bool Disabled(std::uint64_t bit) {
     return (__atomic_load_n(&runtime_disabled_optimizations, __ATOMIC_RELAXED) & bit) != 0;
 }
 } // namespace Gow3Toggle
+
+/// The second word of toggles: the toggle file's second number (after BevelTipDrip's MediEvil
+/// fork; all 64 bits of the first word are taken). A set bit switches that optimization off.
+namespace Gow3Toggle2 {
+enum : std::uint64_t {
+    BulkDescriptorCopy = 1, ///< a descriptor push copies its writes and info arrays in one piece each
+    SamplerMemo = 2,        ///< sampler handles reused within a GC period (Rasterizer::BindSamplers)
+    TexsetRegions = 4,      ///< memoized texture sets checked by region stamps, not the global generation
+    TexsetTwoWay = 8,       ///< two slots per texture-set key, least recently used replaced
+};
+inline bool Disabled(std::uint64_t bit) {
+    return (__atomic_load_n(&runtime_disabled_optimizations2, __ATOMIC_RELAXED) & bit) != 0;
+}
+} // namespace Gow3Toggle2
 
 namespace Gow3Stats {
 /// Guest writes caught by page protection, and pages currently left unprotected as hot.

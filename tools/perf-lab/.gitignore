@@ -1,0 +1,12 @@
+# Local test material: builds, your copied data (saves, settings), logs and your own recordings.
+builds/
+data-template/
+data-run/
+results/
+recordings/*
+!recordings/selftest.pad
+pad.txt
+toggle.txt
+toggle.txt.tmp
+play-fast.log
+__pycache__/

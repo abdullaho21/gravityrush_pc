@@ -846,18 +846,34 @@ void *runtime_low_map(size_t size, int prot) {
 struct toggle_line { uint64_t value; unsigned char pad[56]; };
 __attribute__((aligned(64))) struct toggle_line runtime_toggle_line __asm__("runtime_disabled_optimizations");
 #define runtime_disabled_optimizations (runtime_toggle_line.value)
+/* An optional second number in the file is a second word of bits (Gow3Toggle2, all 64 of the
+ * first are taken; after BevelTipDrip's MediEvil fork): 1 bulk descriptor copy per push,
+ * 2 sampler handle memo, 4 texture-set region stamps, 8 two-way texture-set memo. Own cache line
+ * as well. */
+__attribute__((aligned(64))) struct toggle_line runtime_toggle_line2 __asm__("runtime_disabled_optimizations2");
+#define runtime_disabled_optimizations2 (runtime_toggle_line2.value)
 /* Speculative readers of guest memory (GPU draw-preparation workers) register a recovery
  * point: a fault on that thread jumps back to it instead of terminating (probe.c). */
 __thread sigjmp_buf *runtime_fault_recover;
 static void *toggle_watcher(void *path) {
-    for (unsigned long long last=ULLONG_MAX;;) {
+    for (unsigned long long last=ULLONG_MAX,last2=ULLONG_MAX;;) {
         FILE *f=fopen(path,"r");
-        unsigned long long value=0;
-        if (f) { if (fscanf(f,"%llu",&value)!=1) value=0; fclose(f); }
+        unsigned long long value=0,value2=0;
+        if (f) {
+            const int read=fscanf(f,"%llu %llu",&value,&value2);
+            if (read<1) value=0;
+            if (read<2) value2=0;
+            fclose(f);
+        }
         if (value!=last) {
             __atomic_store_n(&runtime_disabled_optimizations,(uint64_t)value,__ATOMIC_RELEASE);
             printf("Runtime: disabled optimizations mask=%llu\n",value);
             last=value;
+        }
+        if (value2!=last2) {
+            __atomic_store_n(&runtime_disabled_optimizations2,(uint64_t)value2,__ATOMIC_RELEASE);
+            printf("Runtime: disabled optimizations second word=%llu\n",value2);
+            last2=value2;
         }
 #ifdef _WIN32
         compat_sleep_ns(250000000);
