@@ -78,6 +78,12 @@ if [[ -n ${PIN:-} ]]; then
     (( $(grep -cE 'pinned (shadPS4:GpuComm|gow3:DrawRec|gow3:VkRecorder|DrawThread) ' "$here/results/pin-$label.txt") >= 4 )) ||
         echo "$label: pinning incomplete: $(tail -1 "$here/results/pin-$label.txt")"
 fi
+if [[ -n ${MON:-} ]]; then
+    # MON=1: once a second, the game's threads, every CPU, the busiest other processes and the GPU
+    # (monitor.py) into results/mon-<label>.jsonl until the game exits.
+    mpid=$(ps -o pid=,comm= -g "$pgid" | awk '$2 ~ /^gravityrush-r/ {print $1; exit}')
+    [[ -n $mpid ]] && python3 "$here/monitor.py" "$mpid" "$here/results/mon-$label.jsonl" &
+fi
 if [[ -n ${PAD_HOLD:-} ]]; then
     # PAD_HOLD="rx=255" etc.: held from here to the end (e.g. the camera keeps turning).
     echo "$PAD_HOLD" > "$pad"
@@ -98,6 +104,30 @@ print("%d,%d %dx%d" % (*c[0]["at"], *c[0]["size"]) if c else "")' "${gpid:-0}" 2
     fi
 fi
 start=$(wc -l < "$log")
+if [[ -n ${SAMPLETHREADS:-} ]]; then
+    # SAMPLETHREADS="DrawThread shadPS4:GpuComm": for SAMPLESECS (default 20) of the measured window, the
+    # state and system call of each of those threads ~1000 times a second (syscall-sample.py).
+    spid=$(ps -o pid=,comm= -g "$pgid" | awk '$2 ~ /^gravityrush-r/ {print $1; exit}')
+    for sname in $SAMPLETHREADS; do
+        taskset -c "${SAMPLECPU:-15}" python3 "$here/syscall-sample.py" "$spid" "$sname" "${SAMPLESECS:-20}" \
+            "$here/results/sys-$label-${sname//[^A-Za-z0-9]/_}.json" &
+    done
+fi
+if [[ -n ${PERFTHREAD:-} ]]; then
+    # PERFTHREAD=<thread name>: during the measured window, perf stat (cycles, instructions, TLB misses)
+    # and perf record (user space) of that one thread of the game, into results/perf*-<label>.*.
+    ppid=$(ps -o pid=,comm= -g "$pgid" | awk '$2 ~ /^gravityrush-r/ {print $1; exit}')
+    ptid=$(for t in /proc/"$ppid"/task/*; do [[ $(<"$t/comm") == "$PERFTHREAD" ]] && { echo "${t##*/}"; break; }; done)
+    if [[ -n $ptid ]]; then
+        pdur=${PERFSECS:-20}
+        perf stat -t "$ptid" -x, -o "$here/results/perfstat-$label.csv" \
+            -e cycles:u,instructions:u,dTLB-load-misses:u,iTLB-load-misses:u -- sleep "$pdur" 2>/dev/null &
+        perf record -q -t "$ptid" -e cycles:u -F 1999 -o "$here/results/perfrec-$label.data" -- sleep "$pdur" \
+            2>"$here/results/perfrec-$label.err" &
+    else
+        echo "$label: no thread named $PERFTHREAD"
+    fi
+fi
 now_ms() { echo $(( ${EPOCHREALTIME//[.,]/} / 1000 )); }
 # TOGGLE_AB phases on a fixed clock from the start of the measured window (no drift over long runs):
 # phase k is "0 0" (everything on) or TOGGLE_AB; INVERT=1 starts with TOGGLE_AB (replays then measure

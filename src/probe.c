@@ -559,6 +559,13 @@ int main(int argc, char **argv) {
        non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits. */
     mallopt(M_ARENA_MAX,1);
     mallopt(M_MMAP_THRESHOLD,32*1024*1024);
+    /* An explicit mmap threshold also freezes glibc's trim threshold at its 128 KiB default. With
+       one heap for every thread, a large buffer freed at the heap's top each frame was handed back
+       with brk and faulted in again page by page on the next frame: ~850 faults (~0.4 ms) per frame
+       on the game's DrawThread in most launches, 260-299 FPS from launch to launch depending on
+       where allocations happened to land. Up to 128 MiB stays at the top; growth in 16 MiB steps. */
+    mallopt(M_TRIM_THRESHOLD,128*1024*1024);
+    mallopt(M_TOP_PAD,16*1024*1024);
 #endif
     if (argc == 2 && !strcmp(argv[1], "--vulkan-only")) return vulkan_smoke();
 #ifdef _WIN32
