@@ -1173,7 +1173,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             });
         }
     }
-    pipeline->BindResources(set_writes, push_data);
+    pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
+                            {buffer_infos.data(), buffer_infos.size()});
     // gow3: jitter everything drawn with a depth test against the scene depth. Full-screen
     // passes test nothing (or always pass) and stay put: a shifted full-screen quad leaves an edge
     // column unwritten. Small draws are not left out: Gravity Rush draws panels and decals as
@@ -1316,7 +1317,8 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     push_data.xoffset *= target_scale[0];
     push_data.yscale *= target_scale[1];
     push_data.yoffset *= target_scale[1];
-    pipeline->BindResources(set_writes, push_data);
+    pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
+                            {buffer_infos.data(), buffer_infos.size()});
     draw_jitter = {};
     if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth()) {
         draw_jitter = upscaler->Jitter();
@@ -1417,7 +1419,8 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
 
     scheduler.EndRendering();
     mark();
-    pipeline->BindResources(set_writes, push_data);
+    pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
+                            {buffer_infos.data(), buffer_infos.size()});
 
     const vk::Pipeline handle = pipeline->Handle();
     const u32 dim_x = cs_program.dim_x, dim_y = cs_program.dim_y, dim_z = cs_program.dim_z;
@@ -1470,7 +1473,8 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     }
 
     scheduler.EndRendering();
-    pipeline->BindResources(set_writes, push_data);
+    pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
+                            {buffer_infos.data(), buffer_infos.size()});
 
     const vk::Pipeline handle = pipeline->Handle();
     const vk::Buffer args = buffer->Handle();
@@ -2383,6 +2387,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         BindSamplers(stage, prepared, binding, write_index);
         return;
     }
+    // Region stamps: a set is not memoized when an image was (un)registered during its bind.
+    const u64 bind_generation = texture_cache.RegistryGeneration();
     image_bindings.clear();
     image_binding_entries.clear();
     image_desc_overflow.clear();
@@ -2560,7 +2566,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                     image_infos.emplace_back(VK_NULL_HANDLE, proxy->view, proxy->layout);
                     if (set_ok && binding_index < resolved.size()) {
                         resolved[binding_index] = {image_id, proxy->view, image.backing,
-                                                   desc.view_info.range, true};
+                                                   desc.view_info.range, true,
+                                                   image.info.guest_address, desc.info.guest_address,
+                                                   image.info.guest_size, desc.info.guest_size};
                     }
                     ++proxy_samples;
                     continue;
@@ -2614,17 +2622,23 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             image_infos.emplace_back(VK_NULL_HANDLE, view, layout);
             if (set_ok && binding_index < resolved.size()) {
                 resolved[binding_index] = {image_id, *image_view.image_view, image.backing,
-                                           desc.view_info.range};
+                                           desc.view_info.range, false, image.info.guest_address,
+                                           desc.info.guest_address, image.info.guest_size,
+                                           desc.info.guest_size};
                 set_ok = !is_storage && !binding.force_general && !binding.is_target;
             }
         }
     }
-    if (set_ok && image_bindings.size() == stage.images.size()) {
-        // Remember the set: the same T#s resolve the same way while no image is (un)registered.
+    const bool texset_regions = !Gow3Toggle2::Disabled(Gow3Toggle2::TexsetRegions);
+    if (set_ok && image_bindings.size() == stage.images.size() &&
+        (!texset_regions || texture_cache.RegistryGeneration() == bind_generation)) {
+        // Remember the set: the same T#s resolve the same way while no image is (un)registered
+        // (over their own ranges with region stamps; none was during this bind).
         set_slot->generation = texture_cache.RegistryGeneration();
         set_slot->scene_generation = scene_targets->Generation();
         set_slot->count = static_cast<u32>(stage.images.size());
         std::copy_n(resolved.begin(), set_slot->count, set_slot->entries.begin());
+        set_slot->stamp = TextureSetStamp(*set_slot); // always: the switch is live
     } else if (set_slot) {
         set_slot->key = 0;
     }
@@ -2653,12 +2667,41 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
 
 void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* prepared,
                               Shader::Backend::Bindings& binding, u32& write_index) {
+    // From BevelTipDrip's MediEvil fork: GetSampler hashes the S# with XXH3 and takes the sampler
+    // mutex for every sampler of every draw. A handle it returned in the current GC period is
+    // reused within that period (per thread); the sampler GC keeps it alive for at least 16 more
+    // periods, and the first use in each period still goes through GetSampler (LRU touch).
+    // Gravity Rush port: the key also holds the forced anisotropy (part of GetSampler's hash).
+    struct SamplerMemo {
+        AmdGpu::Sampler sharp{};
+        u64 border_color = 0;
+        float lod_bias = 0.0f;
+        int anisotropy = -1;
+        bool is_depth = false;
+        u64 tick = ~0ull;
+        vk::Sampler handle{};
+    };
+    static thread_local std::array<SamplerMemo, 256> sampler_memo{};
+    const bool memo_on = !Gow3Toggle2::Disabled(Gow3Toggle2::SamplerMemo);
+    const u64 gc_tick = texture_cache.GcTick();
+    const u64 border_color = Regs().ta_bc_base.base_addr;
+    const int anisotropy = Gow3Settings::Get().anisotropy.load(std::memory_order_relaxed);
     for (u32 sampler_index = 0; sampler_index < stage.samplers.size(); ++sampler_index) {
         const auto& sampler = stage.samplers[sampler_index];
         auto ssharp =
             prepared ? prepared->sampler_sharps[sampler_index] : sampler.GetSharp(stage);
-        const auto vk_sampler = texture_cache.GetSampler(
-            ssharp, Regs().ta_bc_base, sampler.is_depth, sampler.is_depth ? 0.0f : sampler_lod_bias);
+        const float lod_bias = sampler.is_depth ? 0.0f : sampler_lod_bias;
+        u64 slot_hash = (ssharp.raw0 ^ ssharp.raw1 * 0x9E3779B97F4A7C15ull ^ border_color) * 0xFF51AFD7ED558CCDull;
+        slot_hash ^= slot_hash >> 29;
+        auto& memo = sampler_memo[(slot_hash ^ sampler.is_depth) % sampler_memo.size()];
+        vk::Sampler vk_sampler;
+        if (memo_on && memo.tick == gc_tick && memo.sharp == ssharp && memo.border_color == border_color &&
+            memo.is_depth == sampler.is_depth && memo.lod_bias == lod_bias && memo.anisotropy == anisotropy) {
+            vk_sampler = memo.handle;
+        } else {
+            vk_sampler = texture_cache.GetSampler(ssharp, Regs().ta_bc_base, sampler.is_depth, lod_bias);
+            memo = {ssharp, border_color, lod_bias, anisotropy, sampler.is_depth, gc_tick, vk_sampler};
+        }
         image_infos.emplace_back(vk_sampler, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
         auto& set_write = set_writes[write_index++];
         set_write.dstSet = VK_NULL_HANDLE;
@@ -2699,6 +2742,20 @@ Rasterizer::BeginSignature Rasterizer::MakeBeginSignature(const GraphicsPipeline
     return sig;
 }
 
+/// gow3 (after BevelTipDrip's MediEvil fork, T-S1a): memoized texture sets are checked against
+/// the region stamps of their own images and T#s instead of the registry generation, which any
+/// image (un)registration anywhere changed. Live switch: second toggle word bit 4.
+u64 Rasterizer::TextureSetStamp(const TextureSet& set) const {
+    u64 stamp = 0;
+    for (u32 i = 0; i < set.count; ++i) {
+        const auto& entry = set.entries[i];
+        if (!entry.id) continue;
+        stamp += texture_cache.RegionStamp(entry.address, entry.size) +
+                 texture_cache.RegionStamp(entry.sharp_address, entry.sharp_size);
+    }
+    return stamp;
+}
+
 bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedStage* prepared,
                                      u32 first_image_idx, bool& barrier, TextureSet*& slot) {
     const u32 count = static_cast<u32>(stage.images.size());
@@ -2714,16 +2771,32 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
     u64 key = XXH3_64bits_withSeed(prepared->image_hashes, count * sizeof(u64),
                                    reinterpret_cast<u64>(&stage));
     key |= 1; // 0 marks an empty slot
-    auto& set = texture_sets[key % texture_sets.size()];
-    slot = &set;
     const u64 generation = texture_cache.RegistryGeneration();
-    const bool match = set.key == key && set.stage == &stage && set.count == count &&
-                       set.generation == generation &&
+    const bool regions = !Gow3Toggle2::Disabled(Gow3Toggle2::TexsetRegions);
+    // Two ways (after BevelTipDrip's fork, T-S1b: half the misses were another set in the slot):
+    // a set lives in either of two slots; the less recently used one is replaced. Live switch:
+    // second toggle word bit 8.
+    const bool two_way = !Gow3Toggle2::Disabled(Gow3Toggle2::TexsetTwoWay);
+    const u64 index = key % texture_sets.size();
+    TextureSet* way0 = &texture_sets[index];
+    TextureSet* way1 = two_way ? &texture_sets[index ^ 1] : way0;
+    TextureSet* found = way0->key == key ? way0 : way1->key == key ? way1 : nullptr;
+    auto& set = found ? *found : *(way0->last_use <= way1->last_use ? way0 : way1);
+    slot = &set;
+    set.last_use = ++texture_set_tick;
+    // Region stamps: an unchanged registry generation since the set was last confirmed needs no
+    // stamp; otherwise the stamps decide and a still-valid set takes the new generation.
+    bool current = found && set.generation != ~0ull;
+    if (current && set.generation != generation) {
+        current = regions && set.stamp == TextureSetStamp(set);
+        if (current) set.generation = generation;
+    }
+    const bool match = found && set.stage == &stage && set.count == count && current &&
                        set.scene_generation == scene_targets->Generation() &&
                        std::equal(set.hashes.begin(), set.hashes.begin() + count,
                                   prepared->image_hashes);
     if (!match) {
-        ++texture_set_why[set.key != key ? 0 : set.generation != generation ? 1 : 3];
+        ++texture_set_why[!found ? 0 : !current ? 1 : 3];
         ++texture_set_misses;
         set.key = key;
         set.stage = &stage;

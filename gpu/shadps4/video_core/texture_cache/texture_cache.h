@@ -101,6 +101,21 @@ public:
         return registry_generation.load(std::memory_order_acquire);
     }
 
+    /// gow3 region stamps (after BevelTipDrip's MediEvil fork, T-S1a): a sum that grows whenever an
+    /// image overlapping [address, address + size) is registered or unregistered, by 4 MiB region (a
+    /// region shared through the table's wrap only adds misses). RegistryGeneration changes for any
+    /// image: one texture streaming in invalidated every memoized texture set.
+    static constexpr u32 RegionShift = 22, RegionCount = 1u << 16;
+    [[nodiscard]] u64 RegionStamp(VAddr address, u64 size) const noexcept {
+        const u64 first = address >> RegionShift;
+        const u64 last = (address + std::max<u64>(size, 1) - 1) >> RegionShift;
+        u64 stamp = 0;
+        for (u64 r = first; r <= last && r - first < RegionCount; ++r) {
+            stamp += region_gens[r & (RegionCount - 1)].load(std::memory_order_relaxed);
+        }
+        return stamp;
+    }
+
     /// gow3: FindImage's access tick for an image found by a memoized lookup. The LRU touch
     /// FindImage also does happens in UpdateImage (FindTexture), which every binding reaches.
     void MarkFound(ImageId image_id) {
@@ -220,6 +235,13 @@ public:
 
     /// Retrieves the sampler that matches the provided S# descriptor.
     /// extra_lod_bias: gow3, added to the S#'s bias (reduced scene rendering).
+    /// gow3 (after BevelTipDrip's MediEvil fork): the garbage collection period. A sampler
+    /// GetSampler returned in this period stays alive for at least 16 more (the sampler GC), so
+    /// its handle may be reused within it.
+    [[nodiscard]] u64 GcTick() const noexcept {
+        return std::atomic_ref<u64>(const_cast<u64&>(gc_tick)).load(std::memory_order_relaxed);
+    }
+
     [[nodiscard]] vk::Sampler GetSampler(const AmdGpu::Sampler& sampler,
                                          AmdGpu::BorderColorBuffer border_color_base,
                                          bool is_depth, float extra_lod_bias = 0.0f);
@@ -528,6 +550,14 @@ private:
     };
     std::array<FindImageCacheEntry, 1024> find_image_cache{};
     std::atomic<u64> registry_generation{0};
+    std::unique_ptr<std::atomic<u32>[]> region_gens{new std::atomic<u32>[RegionCount]{}};
+    void BumpRegions(VAddr address, u64 size) noexcept {
+        const u64 first = address >> RegionShift;
+        const u64 last = (address + std::max<u64>(size, 1) - 1) >> RegionShift;
+        for (u64 r = first; r <= last && r - first < RegionCount; ++r) {
+            region_gens[r & (RegionCount - 1)].fetch_add(1, std::memory_order_release);
+        }
+    }
     std::mutex samplers_mutex;
     std::mutex download_images_mutex;
     struct MetaDataInfo {
